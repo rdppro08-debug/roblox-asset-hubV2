@@ -1,8 +1,11 @@
-# Roblox Asset Hub v3 (Streamlit):
-#  - Pestaña 1: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)
-#  - Pestaña 2: publicar juegos (.rbxl/.rbxlx) en un place existente
+# Roblox Asset Hub v4 (Streamlit):
+#  - Pestaña 1: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)  -> usa ROBLOX_API_KEY
+#  - Pestaña 2: publicar juegos (.rbxl/.rbxlx) en un place existente -> usa ROBLOX_PLACE_API_KEY
+#
 # Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
-# Secrets opcionales: UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
+# Secrets opcionales:
+#   ROBLOX_PLACE_API_KEY  (API Key aparte para publicar juegos; si falta, usa ROBLOX_API_KEY)
+#   UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
 
 import hmac
 import json
@@ -23,6 +26,8 @@ def secreto(nombre):
 
 
 API_KEY = secreto("ROBLOX_API_KEY")
+PLACE_API_KEY = secreto("ROBLOX_PLACE_API_KEY") or API_KEY
+USA_KEY_SEPARADA = bool(secreto("ROBLOX_PLACE_API_KEY"))
 USER_ID = secreto("ROBLOX_USER_ID")
 APP_USER = secreto("APP_USER")
 APP_PASS = secreto("APP_PASS")
@@ -156,7 +161,7 @@ def publicar_place(universe_id, place_id, contenido, ext, tipo_version):
     try:
         r = requests.post(
             url,
-            headers={"x-api-key": API_KEY, "Content-Type": tipo_contenido},
+            headers={"x-api-key": PLACE_API_KEY, "Content-Type": tipo_contenido},
             params={"versionType": tipo_version},
             data=contenido,
             timeout=300,
@@ -312,6 +317,10 @@ with tab_juego:
         "Esto **reemplaza el contenido de un place que ya existe**. "
         "No crea juegos nuevos. Crea antes un place vacío en Roblox y copia sus IDs."
     )
+    if USA_KEY_SEPARADA:
+        st.caption("🔑 Usando la API Key de juegos (ROBLOX_PLACE_API_KEY).")
+    else:
+        st.caption("🔑 Usando la API Key general (ROBLOX_API_KEY). Puedes añadir ROBLOX_PLACE_API_KEY en los secrets.")
 
     universe_id = st.text_input("Universe ID", value=UNIVERSE_ID_DEF, key="universe_id")
     place_id = st.text_input("Place ID", value=PLACE_ID_DEF, key="place_id")
