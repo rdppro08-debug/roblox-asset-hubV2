@@ -28,17 +28,57 @@ if not (API_KEY and USER_ID.isdigit() and APP_USER and APP_PASS):
     st.error("Faltan secrets: ROBLOX_API_KEY, ROBLOX_USER_ID (numerico), APP_USER, APP_PASS.")
     st.stop()
 
-# ---------- Login ----------
+# ---------- Login (con sesion recordada por 30 dias) ----------
+DURACION_SESION = 30 * 24 * 3600  # 30 dias
+
+
+def _firma(exp):
+    clave = (APP_PASS + API_KEY).encode("utf-8")
+    return hmac.new(clave, f"{APP_USER}|{exp}".encode("utf-8"), "sha256").hexdigest()
+
+
+def crear_token():
+    exp = int(time.time()) + DURACION_SESION
+    return f"{exp}.{_firma(exp)}"
+
+
+def token_valido(token):
+    try:
+        exp_txt, firma = token.split(".", 1)
+        exp = int(exp_txt)
+    except Exception:
+        return False
+    return exp > time.time() and hmac.compare_digest(
+        firma.encode("utf-8"), _firma(exp).encode("utf-8")
+    )
+
+
+def credenciales_ok(u, p):
+    return hmac.compare_digest(u.encode("utf-8"), APP_USER.encode("utf-8")) and hmac.compare_digest(
+        p.encode("utf-8"), APP_PASS.encode("utf-8")
+    )
+
+
+# Si la URL trae un token valido, entra directo sin pedir usuario y contraseña
+if not st.session_state.get("autenticado"):
+    t = st.query_params.get("t", "")
+    if t and token_valido(t):
+        st.session_state["autenticado"] = True
+
 if not st.session_state.get("autenticado"):
     st.title("📦 Roblox Asset Hub")
     st.caption("Inicia sesión para continuar.")
-    with st.form("login"):
-        u = st.text_input("Usuario")
-        p = st.text_input("Contraseña", type="password")
-        entrar = st.form_submit_button("Entrar", type="primary", use_container_width=True)
-    if entrar:
-        if hmac.compare_digest(u, APP_USER) and hmac.compare_digest(p, APP_PASS):
+    u = st.text_input("Usuario", key="login_u")
+    mostrar = st.checkbox("Mostrar contraseña", value=False)
+    p = st.text_input(
+        "Contraseña",
+        type="default" if mostrar else "password",
+        key="login_p",
+    )
+    if st.button("Entrar", type="primary", use_container_width=True):
+        if credenciales_ok(u, p):
             st.session_state["autenticado"] = True
+            st.query_params["t"] = crear_token()
             st.rerun()
         else:
             st.error("Usuario o contraseña incorrectos.")
@@ -108,6 +148,7 @@ with st.sidebar:
     st.header("📦 Asset Hub")
     st.caption("Modelos: .fbx .gltf .glb\n\nAnimaciones: .rbxm\n\nMáximo 20 MB por archivo.")
     if st.button("Cerrar sesión", use_container_width=True):
+        st.query_params.clear()
         st.session_state.clear()
         st.rerun()
 
