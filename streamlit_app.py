@@ -1,5 +1,8 @@
-# Roblox Asset Hub v2 (Streamlit): modelos (.fbx/.gltf/.glb) y animaciones (.rbxm).
+# Roblox Asset Hub v3 (Streamlit):
+#  - Pestaña 1: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)
+#  - Pestaña 2: publicar juegos (.rbxl/.rbxlx) en un place existente
 # Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
+# Secrets opcionales: UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
 
 import hmac
 import json
@@ -23,6 +26,8 @@ API_KEY = secreto("ROBLOX_API_KEY")
 USER_ID = secreto("ROBLOX_USER_ID")
 APP_USER = secreto("APP_USER")
 APP_PASS = secreto("APP_PASS")
+UNIVERSE_ID_DEF = secreto("UNIVERSE_ID")
+PLACE_ID_DEF = secreto("PLACE_ID")
 
 if not (API_KEY and USER_ID.isdigit() and APP_USER and APP_PASS):
     st.error("Faltan secrets: ROBLOX_API_KEY, ROBLOX_USER_ID (numerico), APP_USER, APP_PASS.")
@@ -84,10 +89,11 @@ if not st.session_state.get("autenticado"):
             st.error("Usuario o contraseña incorrectos.")
     st.stop()
 
-# ---------- Subida a Roblox ----------
+# ---------- Subida de assets a Roblox ----------
 URL = "https://apis.roblox.com/assets/v1/assets"
 CABECERAS = {"x-api-key": API_KEY}
 MAX_BYTES = 20 * 1024 * 1024
+MAX_BYTES_PLACE = 100 * 1024 * 1024
 
 FORMATOS = {
     ".fbx": ("Model", "model/fbx"),
@@ -143,10 +149,42 @@ def subir_archivo(nombre_archivo, contenido, tipo_asset, mime, nombre, descripci
         return False, "", "Error de conexion: " + str(err)
 
 
+# ---------- Publicar juego (place) ----------
+def publicar_place(universe_id, place_id, contenido, ext, tipo_version):
+    url = f"https://apis.roblox.com/universes/v1/{universe_id}/places/{place_id}/versions"
+    tipo_contenido = "application/xml" if ext == ".rbxlx" else "application/octet-stream"
+    try:
+        r = requests.post(
+            url,
+            headers={"x-api-key": API_KEY, "Content-Type": tipo_contenido},
+            params={"versionType": tipo_version},
+            data=contenido,
+            timeout=300,
+        )
+        if not r.ok:
+            pistas = {
+                401: "API Key invalida o sin permiso universe-places:write.",
+                403: "La API Key no tiene acceso a este universo o la IP esta restringida.",
+                404: "Universe ID o Place ID incorrecto.",
+                409: "Conflicto: el place esta ocupado, intenta de nuevo.",
+                429: "Demasiadas solicitudes, espera un momento.",
+            }
+            pista = pistas.get(r.status_code, "")
+            return False, f"HTTP {r.status_code}. {pista} {r.text[:300]}".strip()
+        version = r.json().get("versionNumber", "?")
+        return True, str(version)
+    except requests.exceptions.RequestException as err:
+        return False, "Error de conexion: " + str(err)
+
+
 # ---------- Barra lateral ----------
 with st.sidebar:
     st.header("📦 Asset Hub")
-    st.caption("Modelos: .fbx .gltf .glb\n\nAnimaciones: .rbxm\n\nMáximo 20 MB por archivo.")
+    st.caption(
+        "Modelos: .fbx .gltf .glb\n\n"
+        "Animaciones: .rbxm (máx. 20 MB)\n\n"
+        "Juegos: .rbxl .rbxlx (máx. 100 MB)"
+    )
     if st.button("Cerrar sesión", use_container_width=True):
         st.query_params.clear()
         st.session_state.clear()
@@ -154,108 +192,175 @@ with st.sidebar:
 
 st.title("📦 Roblox Asset Hub")
 
-# ---------- Paso 1: archivos ----------
-st.subheader("1. Elige tus archivos")
-archivos = st.file_uploader(
-    "Archivos",
-    type=["fbx", "gltf", "glb", "rbxm"],
-    accept_multiple_files=True,
-    label_visibility="collapsed",
-)
-tipo_rbxm = st.radio(
-    "Los archivos .rbxm son:", ["Animación", "Modelo"], horizontal=True
-)
+tab_assets, tab_juego = st.tabs(["📦 Assets", "🎮 Publicar juego"])
 
-# ---------- Paso 2: nombres ----------
-nombres = []
-descripcion = "Subido desde Asset Hub."
-if archivos:
-    st.subheader("2. Nombres y descripción")
-    prefijo = st.text_input(
-        "Prefijo opcional (se añade al inicio de todos los nombres)",
-        placeholder="Ej: Katana_",
+# =====================================================================
+# PESTAÑA 1: ASSETS
+# =====================================================================
+with tab_assets:
+    st.subheader("1. Elige tus archivos")
+    archivos = st.file_uploader(
+        "Archivos",
+        type=["fbx", "gltf", "glb", "rbxm"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        key="uploader_assets",
     )
-    descripcion = st.text_input("Descripción (para todos)", value=descripcion)
+    tipo_rbxm = st.radio(
+        "Los archivos .rbxm son:", ["Animación", "Modelo"], horizontal=True
+    )
 
-    for i, f in enumerate(archivos):
-        base = os.path.splitext(f.name)[0]
-        n = st.text_input(
-            f"📄 {f.name}",
-            value=base,
-            max_chars=50,
-            key=f"nombre_{i}_{f.name}_{f.size}",
+    nombres = []
+    descripcion = "Subido desde Asset Hub."
+    if archivos:
+        st.subheader("2. Nombres y descripción")
+        prefijo = st.text_input(
+            "Prefijo opcional (se añade al inicio de todos los nombres)",
+            placeholder="Ej: Katana_",
         )
-        final = (prefijo.strip() + n.strip())[:50] or "MiAsset"
-        nombres.append(final)
-    st.caption("Roblox permite nombres de hasta 50 caracteres.")
+        descripcion = st.text_input("Descripción (para todos)", value=descripcion)
 
-# ---------- Paso 3: subir ----------
-if archivos:
-    st.subheader("3. Subir")
-if st.button(
-    "🚀 Subir a Roblox",
-    type="primary",
-    disabled=not archivos,
-    use_container_width=True,
-):
-    filas = []
-    barra = st.progress(0.0)
-    estado = st.empty()
-
-    for i, f in enumerate(archivos):
-        nombre_final = nombres[i]
-        estado.info(f"Subiendo {i + 1}/{len(archivos)}: {nombre_final} ...")
-        ext = os.path.splitext(f.name)[1].lower()
-        contenido = f.getvalue()
-
-        if ext not in FORMATOS:
-            ok, aid, msg = False, "", "Formato no aceptado."
-        elif not contenido:
-            ok, aid, msg = False, "", "El archivo esta vacio."
-        elif len(contenido) > MAX_BYTES:
-            ok, aid, msg = False, "", "Supera los 20 MB."
-        else:
-            tipo_asset, mime = FORMATOS[ext]
-            if ext == ".rbxm":
-                tipo_asset = "Animation" if tipo_rbxm == "Animación" else "Model"
-            ok, aid, msg = subir_archivo(
-                f.name, contenido, tipo_asset, mime, nombre_final, descripcion
+        for i, f in enumerate(archivos):
+            base = os.path.splitext(f.name)[0]
+            n = st.text_input(
+                f"📄 {f.name}",
+                value=base,
+                max_chars=50,
+                key=f"nombre_{i}_{f.name}_{f.size}",
             )
+            final = (prefijo.strip() + n.strip())[:50] or "MiAsset"
+            nombres.append(final)
+        st.caption("Roblox permite nombres de hasta 50 caracteres.")
 
-        filas.append(
-            {
-                "Nombre": nombre_final,
-                "Archivo": f.name,
-                "Resultado": "✅ OK" if ok else "❌ ERROR",
-                "Asset ID": aid,
-                "rbxassetid": f"rbxassetid://{aid}" if aid else "",
-                "Detalle": msg,
-            }
+    if archivos:
+        st.subheader("3. Subir")
+    if st.button(
+        "🚀 Subir a Roblox",
+        type="primary",
+        disabled=not archivos,
+        use_container_width=True,
+    ):
+        filas = []
+        barra = st.progress(0.0)
+        estado = st.empty()
+
+        for i, f in enumerate(archivos):
+            nombre_final = nombres[i]
+            estado.info(f"Subiendo {i + 1}/{len(archivos)}: {nombre_final} ...")
+            ext = os.path.splitext(f.name)[1].lower()
+            contenido = f.getvalue()
+
+            if ext not in FORMATOS:
+                ok, aid, msg = False, "", "Formato no aceptado."
+            elif not contenido:
+                ok, aid, msg = False, "", "El archivo esta vacio."
+            elif len(contenido) > MAX_BYTES:
+                ok, aid, msg = False, "", "Supera los 20 MB."
+            else:
+                tipo_asset, mime = FORMATOS[ext]
+                if ext == ".rbxm":
+                    tipo_asset = "Animation" if tipo_rbxm == "Animación" else "Model"
+                ok, aid, msg = subir_archivo(
+                    f.name, contenido, tipo_asset, mime, nombre_final, descripcion
+                )
+
+            filas.append(
+                {
+                    "Nombre": nombre_final,
+                    "Archivo": f.name,
+                    "Resultado": "✅ OK" if ok else "❌ ERROR",
+                    "Asset ID": aid,
+                    "rbxassetid": f"rbxassetid://{aid}" if aid else "",
+                    "Detalle": msg,
+                }
+            )
+            barra.progress((i + 1) / len(archivos))
+
+        estado.empty()
+        st.session_state["resultados"] = filas
+
+    if st.session_state.get("resultados"):
+        filas = st.session_state["resultados"]
+        ok_n = sum(1 for x in filas if x["Resultado"].startswith("✅"))
+        st.divider()
+        st.subheader("Resultados")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total", len(filas))
+        c2.metric("Correctos", ok_n)
+        c3.metric("Con error", len(filas) - ok_n)
+
+        st.dataframe(filas, hide_index=True)
+
+        ids = [f"{x['Nombre']}: {x['rbxassetid']}" for x in filas if x["rbxassetid"]]
+        if ids:
+            st.text_area("Copiar IDs", "\n".join(ids), height=120)
+
+        for x in filas:
+            if x["Resultado"].startswith("❌"):
+                st.error(f"{x['Nombre']}: {x['Detalle']}")
+
+        st.link_button(
+            "Mis creaciones en Roblox", "https://create.roblox.com/dashboard/creations"
         )
-        barra.progress((i + 1) / len(archivos))
 
-    estado.empty()
-    st.session_state["resultados"] = filas
+# =====================================================================
+# PESTAÑA 2: PUBLICAR JUEGO
+# =====================================================================
+with tab_juego:
+    st.subheader("Publicar un juego (.rbxl / .rbxlx)")
+    st.info(
+        "Esto **reemplaza el contenido de un place que ya existe**. "
+        "No crea juegos nuevos. Crea antes un place vacío en Roblox y copia sus IDs."
+    )
 
-# ---------- Resultados ----------
-if st.session_state.get("resultados"):
-    filas = st.session_state["resultados"]
-    ok_n = sum(1 for x in filas if x["Resultado"].startswith("✅"))
-    st.divider()
-    st.subheader("Resultados")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total", len(filas))
-    c2.metric("Correctos", ok_n)
-    c3.metric("Con error", len(filas) - ok_n)
+    universe_id = st.text_input("Universe ID", value=UNIVERSE_ID_DEF, key="universe_id")
+    place_id = st.text_input("Place ID", value=PLACE_ID_DEF, key="place_id")
 
-    st.dataframe(filas, hide_index=True)
+    archivo_juego = st.file_uploader(
+        "Archivo del juego",
+        type=["rbxl", "rbxlx"],
+        accept_multiple_files=False,
+        key="uploader_juego",
+    )
 
-    ids = [f"{x['Nombre']}: {x['rbxassetid']}" for x in filas if x["rbxassetid"]]
-    if ids:
-        st.text_area("Copiar IDs", "\n".join(ids), height=120)
+    modo = st.radio(
+        "Modo",
+        ["Publicar (visible para todos)", "Guardar (sin publicar)"],
+        help="Guardar sube la versión pero no la hace pública. Podrás publicarla desde Studio.",
+    )
+    tipo_version = "Published" if modo.startswith("Publicar") else "Saved"
 
-    for x in filas:
-        if x["Resultado"].startswith("❌"):
-            st.error(f"{x['Nombre']}: {x['Detalle']}")
+    confirmar = st.checkbox("Entiendo que se reemplazará el contenido actual del place.")
 
-    st.link_button("Mis creaciones en Roblox", "https://create.roblox.com/dashboard/creations")
+    listo = bool(
+        archivo_juego and universe_id.strip().isdigit() and place_id.strip().isdigit() and confirmar
+    )
+
+    if st.button(
+        "🎮 Subir juego",
+        type="primary",
+        disabled=not listo,
+        use_container_width=True,
+    ):
+        contenido = archivo_juego.getvalue()
+        ext = os.path.splitext(archivo_juego.name)[1].lower()
+        if not contenido:
+            st.error("El archivo está vacío.")
+        elif len(contenido) > MAX_BYTES_PLACE:
+            st.error("El archivo supera los 100 MB.")
+        else:
+            with st.spinner("Subiendo juego a Roblox..."):
+                ok, detalle = publicar_place(
+                    universe_id.strip(), place_id.strip(), contenido, ext, tipo_version
+                )
+            if ok:
+                st.success(f"✅ Listo. Versión {detalle} ({'publicada' if tipo_version == 'Published' else 'guardada'}).")
+                st.link_button(
+                    "Abrir en Roblox",
+                    f"https://www.roblox.com/games/{place_id.strip()}",
+                )
+            else:
+                st.error(f"❌ {detalle}")
+
+    if not listo:
+        st.caption("Completa los dos IDs (solo números), sube el archivo y marca la casilla.")
