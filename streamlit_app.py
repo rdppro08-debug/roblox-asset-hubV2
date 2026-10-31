@@ -1,14 +1,17 @@
-# Roblox Asset Hub v5 (Streamlit):
+# Roblox Asset Hub v6 (Streamlit):
 #  - Pestaña 1: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)  -> usa ROBLOX_API_KEY
 #  - Pestaña 2: publicar juegos (.rbxl/.rbxlx) en un place existente -> usa ROBLOX_PLACE_API_KEY
-#  - Pestaña 3: chat con IA (Gemini): texto, audio, chats guardados y código copiable
+#  - Pestaña 3: chat con IA (Gemini / Claude / ChatGPT): texto, audio, chats guardados y código copiable
 #
 # Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
 # Secrets opcionales:
 #   ROBLOX_PLACE_API_KEY  (API Key aparte para publicar juegos; si falta, usa ROBLOX_API_KEY)
 #   UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
-#   GEMINI_API_KEY        (para el chat con IA; gratis en https://aistudio.google.com/apikey)
-#   GEMINI_MODEL          (modelo por defecto del chat; si falta usa gemini-3.8-flash)
+#   GEMINI_API_KEY        (chat con Gemini; gratis en https://aistudio.google.com/apikey)
+#   ANTHROPIC_API_KEY     (chat con Claude; https://console.anthropic.com)
+#   OPENAI_API_KEY        (chat con ChatGPT; https://platform.openai.com/api-keys)
+#   GEMINI_MODEL / ANTHROPIC_MODEL / OPENAI_MODEL  (modelo por defecto de cada uno)
+# Basta con tener UNA de las tres claves de IA; el selector solo muestra las que existan.
 
 import base64
 import hmac
@@ -39,6 +42,8 @@ APP_PASS = secreto("APP_PASS")
 UNIVERSE_ID_DEF = secreto("UNIVERSE_ID")
 PLACE_ID_DEF = secreto("PLACE_ID")
 GEMINI_API_KEY = secreto("GEMINI_API_KEY")
+ANTHROPIC_API_KEY = secreto("ANTHROPIC_API_KEY")
+OPENAI_API_KEY = secreto("OPENAI_API_KEY")
 
 if not (API_KEY and USER_ID.isdigit() and APP_USER and APP_PASS):
     st.error("Faltan secrets: ROBLOX_API_KEY, ROBLOX_USER_ID (numerico), APP_USER, APP_PASS.")
@@ -188,12 +193,28 @@ def publicar_place(universe_id, place_id, contenido, ext, tipo_version):
         return False, "Error de conexion: " + str(err)
 
 
-# ---------- Chat con IA (Gemini) ----------
+# ---------- Chat con IA (Gemini / Claude / ChatGPT) ----------
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
-GEMINI_MODELOS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]
-GEMINI_MODELO_DEF = secreto("GEMINI_MODEL") or GEMINI_MODELOS[0]
-if GEMINI_MODELO_DEF not in GEMINI_MODELOS:
-    GEMINI_MODELOS.insert(0, GEMINI_MODELO_DEF)
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+
+MODELOS = {
+    "Gemini": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
+    "Claude": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
+    "ChatGPT": ["gpt-4o", "gpt-4o-mini"],
+}
+CLAVES_IA = {"Gemini": GEMINI_API_KEY, "Claude": ANTHROPIC_API_KEY, "ChatGPT": OPENAI_API_KEY}
+MODELO_SECRET = {"Gemini": "GEMINI_MODEL", "Claude": "ANTHROPIC_MODEL", "ChatGPT": "OPENAI_MODEL"}
+MODELO_DEF = {}
+for _p in MODELOS:
+    _m = secreto(MODELO_SECRET[_p]) or MODELOS[_p][0]
+    if _m not in MODELOS[_p]:
+        MODELOS[_p].insert(0, _m)
+    MODELO_DEF[_p] = _m
+PROVEEDORES = [p for p in MODELOS if CLAVES_IA[p]]
+
+# Nivel de razonamiento (solo Gemini). "Bajo" responde mucho más rápido.
+NIVELES = {"Automático": None, "Bajo": "low", "Medio": "medium", "Alto": "high"}
 
 MAX_MENSAJES_CONTEXTO = 30  # cuantos mensajes anteriores se envian a la IA
 CHATS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chats_guardados.json")
@@ -210,6 +231,13 @@ SISTEMA_DEF = (
     "Si falta información importante, haz una sola pregunta corta o asume lo más razonable y dilo."
 )
 
+SUGERENCIAS = [
+    ("🛒 Tienda con DataStore", "Hazme un sistema de tienda completo con monedas guardadas en DataStore."),
+    ("⚔️ Sistema de combate", "Hazme un sistema de combate para personajes R6 con golpes y daño."),
+    ("🌀 Portal entre mapas", "Hazme un portal que teletransporte al jugador a otro lugar del mapa."),
+    ("🐞 Arreglar un error", "Voy a pegarte un script con un error para que me ayudes a arreglarlo."),
+]
+
 PATRON_CODIGO = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
 PATRON_ARCHIVO = re.compile(r"[\w\-]+(?:\.[\w\-]+)*\.(?:lua|luau|py|json|txt|js|html|md|toml)")
 EXTENSIONES = {
@@ -225,65 +253,156 @@ EXTENSIONES = {
     "markdown": ".md",
 }
 
+ESTILO_CHAT = """
+<style>
+/* Burbujas */
+div[data-testid="stChatMessage"] {
+    background: rgba(128,128,128,0.10);
+    border-radius: 18px 18px 18px 4px;
+    padding: 0.7rem 0.9rem;
+    margin-bottom: 0.6rem;
+    border: none;
+}
+div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
+div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    flex-direction: row-reverse;
+    background: rgba(79,140,255,0.22);
+    border-radius: 18px 18px 4px 18px;
+    margin-left: auto;
+    width: fit-content;
+    max-width: 88%;
+}
+div[data-testid="stChatMessageAvatarUser"],
+div[data-testid="chatAvatarIcon-user"] { display: none; }
+div[data-testid="stChatMessage"] p { margin-bottom: 0.4rem; }
+/* Caja de texto redondeada */
+div[data-testid="stChatInput"] { border-radius: 26px; }
+div[data-testid="stChatInput"] textarea { font-size: 1rem; }
+/* Indicador "escribiendo" */
+.escribiendo { display: inline-flex; gap: 5px; padding: 6px 2px; }
+.escribiendo span {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: rgba(160,160,160,0.9);
+    animation: salto 1.2s infinite ease-in-out;
+}
+.escribiendo span:nth-child(2) { animation-delay: 0.2s; }
+.escribiendo span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes salto {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-6px); opacity: 1; }
+}
+.cabecera-chat { text-align: center; opacity: 0.65; font-size: 0.8rem; margin: -0.3rem 0 0.6rem 0; }
+</style>
+"""
+PUNTOS_ESCRIBIENDO = '<div class="escribiendo"><span></span><span></span><span></span></div>'
 
-def _cabeceras_gemini():
-    return {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+
+def _contexto(mensajes):
+    """Últimos mensajes; siempre empieza con uno del usuario (Claude lo exige)."""
+    ctx = list(mensajes[-MAX_MENSAJES_CONTEXTO:])
+    while ctx and ctx[0]["role"] != "user":
+        ctx.pop(0)
+    return ctx
 
 
-def _error_gemini(r):
-    pistas = {
-        400: "Solicitud inválida o API Key incorrecta.",
-        403: "La API Key no tiene permiso o no es válida.",
-        404: "Ese modelo no existe o no está disponible; prueba otro en la lista.",
-        429: "Alcanzaste el límite gratuito; espera un momento o usa otro modelo.",
-        500: "Error del servidor de Gemini; intenta de nuevo.",
-        503: "Gemini está saturado; intenta de nuevo en un momento.",
-    }
+def _error_api(nombre, r, pistas):
     try:
         detalle = r.json()["error"]["message"]
     except Exception:
         detalle = r.text[:300]
-    return f"HTTP {r.status_code}. {pistas.get(r.status_code, '')} {detalle}".strip()
+    return f"{nombre}: HTTP {r.status_code}. {pistas.get(r.status_code, '')} {detalle}".strip()
 
 
-def gemini_stream(modelo, mensajes, sistema):
-    """Genera la respuesta de la IA trozo a trozo."""
+PISTAS_GEMINI = {
+    400: "Solicitud inválida o API Key incorrecta.",
+    403: "La API Key no tiene permiso o no es válida.",
+    404: "Ese modelo no existe o no está disponible; prueba otro en la lista.",
+    429: "Alcanzaste el límite gratuito; espera un momento o usa otro modelo.",
+    500: "Error del servidor de Gemini; intenta de nuevo.",
+    503: "Gemini está saturado; intenta de nuevo en un momento.",
+}
+PISTAS_CLAUDE = {
+    401: "API Key de Anthropic inválida.",
+    403: "La API Key no tiene permiso.",
+    404: "Ese modelo no existe; escribe otro en 'Modelo personalizado'.",
+    429: "Demasiadas solicitudes o sin saldo; espera o revisa tu cuenta.",
+    529: "Claude está saturado; intenta de nuevo en un momento.",
+}
+PISTAS_OPENAI = {
+    401: "API Key de OpenAI inválida.",
+    404: "Ese modelo no existe o no tienes acceso; escribe otro en 'Modelo personalizado'.",
+    429: "Demasiadas solicitudes o sin saldo; espera o revisa tu cuenta.",
+    500: "Error del servidor de OpenAI; intenta de nuevo.",
+}
+
+
+def _eventos_sse(r):
+    """Devuelve cada evento JSON de una respuesta en streaming (SSE)."""
+    r.encoding = "utf-8"
+    try:
+        for linea in r.iter_lines(decode_unicode=True):
+            if not linea or not linea.startswith("data:"):
+                continue
+            dato = linea[5:].strip()
+            if not dato or dato == "[DONE]":
+                continue
+            try:
+                yield json.loads(dato)
+            except ValueError:
+                continue
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError(
+            "La IA tardó demasiado o se cortó la conexión. Prueba con razonamiento "
+            f"'Bajo' u otro modelo. ({type(err).__name__})"
+        )
+
+
+# ----- Gemini -----
+def _cabeceras_gemini():
+    return {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+
+
+def _post_gemini(metodo, modelo, cuerpo, nivel, **kw):
+    """POST a Gemini con nivel de razonamiento; si el modelo no lo acepta (400), reintenta sin él."""
+    url = f"{GEMINI_BASE}{modelo}:{metodo}"
+    if nivel:
+        con_nivel = dict(cuerpo)
+        con_nivel["generationConfig"] = {"thinkingConfig": {"thinkingLevel": nivel}}
+        r = requests.post(url, headers=_cabeceras_gemini(), json=con_nivel, **kw)
+        if r.status_code != 400:
+            return r
+        r.close()
+    return requests.post(url, headers=_cabeceras_gemini(), json=cuerpo, **kw)
+
+
+def gemini_stream(modelo, mensajes, sistema, nivel):
     contenidos = [
         {
             "role": "user" if m["role"] == "user" else "model",
             "parts": [{"text": m["text"]}],
         }
-        for m in mensajes[-MAX_MENSAJES_CONTEXTO:]
+        for m in _contexto(mensajes)
     ]
     cuerpo = {"contents": contenidos}
     if sistema.strip():
         cuerpo["systemInstruction"] = {"parts": [{"text": sistema}]}
     try:
-        r = requests.post(
-            f"{GEMINI_BASE}{modelo}:streamGenerateContent",
-            headers=_cabeceras_gemini(),
+        r = _post_gemini(
+            "streamGenerateContent",
+            modelo,
+            cuerpo,
+            nivel,
             params={"alt": "sse"},
-            json=cuerpo,
             stream=True,
-            timeout=(15, 120),
+            timeout=(15, 150),
         )
     except requests.exceptions.RequestException as err:
         raise RuntimeError("Error de conexión: " + str(err))
     if not r.ok:
-        raise RuntimeError(_error_gemini(r))
+        raise RuntimeError(_error_api("Gemini", r, PISTAS_GEMINI))
 
-    r.encoding = "utf-8"
     hubo_texto = False
-    for linea in r.iter_lines(decode_unicode=True):
-        if not linea or not linea.startswith("data:"):
-            continue
-        dato = linea[5:].strip()
-        if not dato or dato == "[DONE]":
-            continue
-        try:
-            j = json.loads(dato)
-        except ValueError:
-            continue
+    for j in _eventos_sse(r):
         bloqueo = (j.get("promptFeedback") or {}).get("blockReason")
         if bloqueo:
             raise RuntimeError(f"Gemini bloqueó la solicitud ({bloqueo}). Intenta reformularla.")
@@ -319,14 +438,9 @@ def gemini_transcribir(modelo, audio_bytes, mime):
         ]
     }
     try:
-        r = requests.post(
-            f"{GEMINI_BASE}{modelo}:generateContent",
-            headers=_cabeceras_gemini(),
-            json=cuerpo,
-            timeout=120,
-        )
+        r = _post_gemini("generateContent", modelo, cuerpo, "low", timeout=120)
         if not r.ok:
-            return False, _error_gemini(r)
+            return False, _error_api("Gemini", r, PISTAS_GEMINI)
         partes = r.json()["candidates"][0]["content"]["parts"]
         texto = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip()
         if not texto:
@@ -336,6 +450,84 @@ def gemini_transcribir(modelo, audio_bytes, mime):
         return False, "Error de conexión: " + str(err)
     except Exception:
         return False, "Respuesta inesperada al transcribir el audio."
+
+
+# ----- Claude (Anthropic) -----
+def claude_stream(modelo, mensajes, sistema):
+    cuerpo = {
+        "model": modelo,
+        "max_tokens": 8192,
+        "stream": True,
+        "messages": [{"role": m["role"], "content": m["text"]} for m in _contexto(mensajes)],
+    }
+    if sistema.strip():
+        cuerpo["system"] = sistema
+    try:
+        r = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=cuerpo,
+            stream=True,
+            timeout=(15, 120),
+        )
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError("Error de conexión: " + str(err))
+    if not r.ok:
+        raise RuntimeError(_error_api("Claude", r, PISTAS_CLAUDE))
+
+    hubo_texto = False
+    for j in _eventos_sse(r):
+        if j.get("type") == "error":
+            raise RuntimeError("Claude: " + str((j.get("error") or {}).get("message", "error")))
+        if j.get("type") == "content_block_delta":
+            texto = (j.get("delta") or {}).get("text")
+            if texto:
+                hubo_texto = True
+                yield texto
+    if not hubo_texto:
+        raise RuntimeError("Claude no devolvió texto. Intenta reformular.")
+
+
+# ----- ChatGPT (OpenAI) -----
+def openai_stream(modelo, mensajes, sistema):
+    msgs = []
+    if sistema.strip():
+        msgs.append({"role": "system", "content": sistema})
+    msgs += [{"role": m["role"], "content": m["text"]} for m in _contexto(mensajes)]
+    try:
+        r = requests.post(
+            OPENAI_URL,
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": modelo, "stream": True, "messages": msgs},
+            stream=True,
+            timeout=(15, 120),
+        )
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError("Error de conexión: " + str(err))
+    if not r.ok:
+        raise RuntimeError(_error_api("ChatGPT", r, PISTAS_OPENAI))
+
+    hubo_texto = False
+    for j in _eventos_sse(r):
+        for ch in j.get("choices") or []:
+            texto = (ch.get("delta") or {}).get("content")
+            if texto:
+                hubo_texto = True
+                yield texto
+    if not hubo_texto:
+        raise RuntimeError("ChatGPT no devolvió texto. Intenta reformular.")
+
+
+def generar(proveedor, modelo, mensajes, sistema, nivel):
+    if proveedor == "Claude":
+        return claude_stream(modelo, mensajes, sistema)
+    if proveedor == "ChatGPT":
+        return openai_stream(modelo, mensajes, sistema)
+    return gemini_stream(modelo, mensajes, sistema, nivel)
 
 
 # ----- Chats guardados -----
@@ -401,6 +593,10 @@ def borrar_chat():
 
 def restaurar_sistema():
     st.session_state["sistema"] = SISTEMA_DEF
+
+
+def elegir_sugerencia(texto):
+    st.session_state["prompt_pendiente"] = texto
 
 
 def regenerar_respuesta():
@@ -471,21 +667,33 @@ def mostrar_mensaje(texto, clave):
             )
 
 
+def modelo_actual(proveedor):
+    custom = st.session_state.get(f"modelo_custom_{proveedor}", "").strip()
+    return custom or st.session_state.get(f"modelo_{proveedor}", MODELO_DEF[proveedor])
+
+
 def pestana_chat():
-    st.subheader("🤖 Chat con IA")
-    if not GEMINI_API_KEY:
+    if not PROVEEDORES:
         st.warning(
-            "Falta el secret **GEMINI_API_KEY**. Crea una clave gratis en "
-            "https://aistudio.google.com/apikey y agrégala en los secrets de Streamlit."
+            "Falta una clave de IA. Agrega en los secrets de Streamlit al menos una: "
+            "**GEMINI_API_KEY** (gratis en https://aistudio.google.com/apikey), "
+            "**ANTHROPIC_API_KEY** u **OPENAI_API_KEY**."
         )
         return
+
+    st.markdown(ESTILO_CHAT, unsafe_allow_html=True)
 
     if "chats" not in st.session_state:
         st.session_state["chats"] = cargar_chats()
         st.session_state["chat_actual"] = None
     st.session_state.setdefault("audio_n", 0)
     st.session_state.setdefault("sistema", SISTEMA_DEF)
-    st.session_state.setdefault("modelo_chat", GEMINI_MODELO_DEF)
+    st.session_state.setdefault("razonamiento", "Bajo")
+    if st.session_state.get("proveedor") not in PROVEEDORES:
+        st.session_state["proveedor"] = PROVEEDORES[0]
+    for p in MODELOS:
+        st.session_state.setdefault(f"modelo_{p}", MODELO_DEF[p])
+        st.session_state.setdefault(f"modelo_custom_{p}", "")
 
     chats = st.session_state["chats"]
     if st.session_state.get("chat_actual") not in chats:
@@ -517,7 +725,21 @@ def pestana_chat():
     )
 
     with st.expander("⚙️ Ajustes y chats guardados"):
-        st.selectbox("Modelo", GEMINI_MODELOS, key="modelo_chat")
+        if len(PROVEEDORES) > 1:
+            st.radio("IA", PROVEEDORES, key="proveedor", horizontal=True)
+        prov_sel = st.session_state["proveedor"]
+        st.selectbox("Modelo", MODELOS[prov_sel], key=f"modelo_{prov_sel}")
+        st.text_input(
+            "Modelo personalizado (opcional)",
+            key=f"modelo_custom_{prov_sel}",
+            placeholder="Si lo llenas, se usa este en lugar del de arriba",
+        )
+        if prov_sel == "Gemini":
+            st.select_slider(
+                "Razonamiento (Bajo = más rápido)",
+                options=list(NIVELES),
+                key="razonamiento",
+            )
         st.text_area(
             "Instrucciones para la IA",
             key="sistema",
@@ -548,18 +770,25 @@ def pestana_chat():
             "desplegar pueden perderse: usa **Exportar** de vez en cuando para tener respaldo."
         )
 
+    proveedor = st.session_state["proveedor"]
+    modelo = modelo_actual(proveedor)
+    nivel = NIVELES.get(st.session_state["razonamiento"])
+    st.markdown(f'<div class="cabecera-chat">{proveedor} · {modelo}</div>', unsafe_allow_html=True)
+
     # --- Zona de mensajes (arriba) y entradas (abajo) ---
     zona_mensajes = st.container()
 
-    prompt = None
+    prompt = st.session_state.pop("prompt_pendiente", None)
     desde_audio = False
-    if hasattr(st, "audio_input"):
+    if GEMINI_API_KEY and hasattr(st, "audio_input"):
         with st.expander("🎤 Hablar con la IA"):
             audio = st.audio_input("Graba tu mensaje", key=f"audio_{st.session_state['audio_n']}")
             if audio is not None and st.button("📨 Enviar audio", type="primary"):
                 with st.spinner("Transcribiendo..."):
                     ok, texto = gemini_transcribir(
-                        st.session_state["modelo_chat"], audio.getvalue(), audio.type
+                        st.session_state.get("modelo_Gemini", MODELO_DEF["Gemini"]),
+                        audio.getvalue(),
+                        audio.type,
                     )
                 if ok:
                     prompt = texto
@@ -577,35 +806,44 @@ def pestana_chat():
     # --- Mostrar historial y responder ---
     with zona_mensajes:
         if not mensajes and not prompt and not regenerar:
-            st.caption("Escribe o graba un mensaje para empezar. Pídele código y te lo da listo para copiar.")
+            st.markdown("##### 👋 ¡Hola! ¿Qué creamos hoy?")
+            st.caption("Escribe, graba un audio o elige una idea para empezar.")
+            for i in range(0, len(SUGERENCIAS), 2):
+                cols = st.columns(2)
+                for col, (etiqueta, texto) in zip(cols, SUGERENCIAS[i : i + 2]):
+                    col.button(
+                        etiqueta,
+                        key=f"sug_{i}_{etiqueta}",
+                        on_click=elegir_sugerencia,
+                        args=(texto,),
+                        use_container_width=True,
+                    )
         for i, m in enumerate(mensajes):
-            with st.chat_message(m["role"]):
+            with st.chat_message(m["role"], avatar="🤖" if m["role"] == "assistant" else None):
                 if m["role"] == "assistant":
                     mostrar_mensaje(m["text"], f"{elegido}_{i}")
                 else:
                     st.markdown(m["text"])
 
-        generar = False
+        generar_resp = False
         if prompt:
             mensajes.append({"role": "user", "text": prompt})
             if chat["titulo"] == TITULO_NUEVO:
                 chat["titulo"] = " ".join(prompt.split())[:40] or TITULO_NUEVO
             with st.chat_message("user"):
                 st.markdown(prompt)
-            generar = True
+            generar_resp = True
         elif regenerar and mensajes and mensajes[-1]["role"] == "user":
-            generar = True
+            generar_resp = True
 
-        if generar:
-            with st.chat_message("assistant"):
+        if generar_resp:
+            with st.chat_message("assistant", avatar="🤖"):
                 estado = st.empty()
-                estado.caption("⏳ Pensando...")
+                estado.markdown(PUNTOS_ESCRIBIENDO, unsafe_allow_html=True)
 
                 def trozos():
                     primero = True
-                    for t in gemini_stream(
-                        st.session_state["modelo_chat"], mensajes, st.session_state["sistema"]
-                    ):
+                    for t in generar(proveedor, modelo, mensajes, st.session_state["sistema"], nivel):
                         if primero:
                             estado.empty()
                             primero = False
@@ -638,7 +876,7 @@ with st.sidebar:
         "Modelos: .fbx .gltf .glb\n\n"
         "Animaciones: .rbxm (máx. 20 MB)\n\n"
         "Juegos: .rbxl .rbxlx (máx. 100 MB)\n\n"
-        "Chat IA: Gemini (texto y audio)"
+        "Chat IA: " + (" / ".join(PROVEEDORES) if PROVEEDORES else "sin configurar")
     )
     if st.button("Cerrar sesión", use_container_width=True):
         st.query_params.clear()
