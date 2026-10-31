@@ -1,15 +1,20 @@
-# Roblox Asset Hub v4 (Streamlit):
+# Roblox Asset Hub v5 (Streamlit):
 #  - Pestaña 1: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)  -> usa ROBLOX_API_KEY
 #  - Pestaña 2: publicar juegos (.rbxl/.rbxlx) en un place existente -> usa ROBLOX_PLACE_API_KEY
+#  - Pestaña 3: chat con IA (Gemini): texto, audio, chats guardados y código copiable
 #
 # Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
 # Secrets opcionales:
 #   ROBLOX_PLACE_API_KEY  (API Key aparte para publicar juegos; si falta, usa ROBLOX_API_KEY)
 #   UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
+#   GEMINI_API_KEY        (para el chat con IA; gratis en https://aistudio.google.com/apikey)
+#   GEMINI_MODEL          (modelo por defecto del chat; si falta usa gemini-3.8-flash)
 
+import base64
 import hmac
 import json
 import os
+import re
 import time
 
 import requests
@@ -33,6 +38,7 @@ APP_USER = secreto("APP_USER")
 APP_PASS = secreto("APP_PASS")
 UNIVERSE_ID_DEF = secreto("UNIVERSE_ID")
 PLACE_ID_DEF = secreto("PLACE_ID")
+GEMINI_API_KEY = secreto("GEMINI_API_KEY")
 
 if not (API_KEY and USER_ID.isdigit() and APP_USER and APP_PASS):
     st.error("Faltan secrets: ROBLOX_API_KEY, ROBLOX_USER_ID (numerico), APP_USER, APP_PASS.")
@@ -182,13 +188,457 @@ def publicar_place(universe_id, place_id, contenido, ext, tipo_version):
         return False, "Error de conexion: " + str(err)
 
 
+# ---------- Chat con IA (Gemini) ----------
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
+GEMINI_MODELOS = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]
+GEMINI_MODELO_DEF = secreto("GEMINI_MODEL") or GEMINI_MODELOS[0]
+if GEMINI_MODELO_DEF not in GEMINI_MODELOS:
+    GEMINI_MODELOS.insert(0, GEMINI_MODELO_DEF)
+
+MAX_MENSAJES_CONTEXTO = 30  # cuantos mensajes anteriores se envian a la IA
+CHATS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chats_guardados.json")
+TITULO_NUEVO = "Chat nuevo"
+
+SISTEMA_DEF = (
+    "Eres un asistente experto en programación, especialmente en Roblox Studio y Luau "
+    "(ServerScript, LocalScript, ModuleScript, RemoteEvents, personajes R6, DataStore y Open Cloud). "
+    "Responde siempre en español, de forma clara y directa; el usuario trabaja desde el celular.\n"
+    "Cuando pidan código: entrega el script COMPLETO, un bloque de código por cada script. "
+    "Antes de cada bloque escribe en una línea el nombre exacto del archivo y su ruta dentro de Roblox "
+    "(por ejemplo: `ServerScriptService/CombatServer` (Script)). "
+    "Nunca uses fragmentos, ni instrucciones de buscar y reemplazar, ni puntos suspensivos que omitan código. "
+    "Si falta información importante, haz una sola pregunta corta o asume lo más razonable y dilo."
+)
+
+PATRON_CODIGO = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
+PATRON_ARCHIVO = re.compile(r"[\w\-]+(?:\.[\w\-]+)*\.(?:lua|luau|py|json|txt|js|html|md|toml)")
+EXTENSIONES = {
+    "lua": ".lua",
+    "luau": ".lua",
+    "python": ".py",
+    "py": ".py",
+    "json": ".json",
+    "javascript": ".js",
+    "js": ".js",
+    "html": ".html",
+    "toml": ".toml",
+    "markdown": ".md",
+}
+
+
+def _cabeceras_gemini():
+    return {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+
+
+def _error_gemini(r):
+    pistas = {
+        400: "Solicitud inválida o API Key incorrecta.",
+        403: "La API Key no tiene permiso o no es válida.",
+        404: "Ese modelo no existe o no está disponible; prueba otro en la lista.",
+        429: "Alcanzaste el límite gratuito; espera un momento o usa otro modelo.",
+        500: "Error del servidor de Gemini; intenta de nuevo.",
+        503: "Gemini está saturado; intenta de nuevo en un momento.",
+    }
+    try:
+        detalle = r.json()["error"]["message"]
+    except Exception:
+        detalle = r.text[:300]
+    return f"HTTP {r.status_code}. {pistas.get(r.status_code, '')} {detalle}".strip()
+
+
+def gemini_stream(modelo, mensajes, sistema):
+    """Genera la respuesta de la IA trozo a trozo."""
+    contenidos = [
+        {
+            "role": "user" if m["role"] == "user" else "model",
+            "parts": [{"text": m["text"]}],
+        }
+        for m in mensajes[-MAX_MENSAJES_CONTEXTO:]
+    ]
+    cuerpo = {"contents": contenidos}
+    if sistema.strip():
+        cuerpo["systemInstruction"] = {"parts": [{"text": sistema}]}
+    try:
+        r = requests.post(
+            f"{GEMINI_BASE}{modelo}:streamGenerateContent",
+            headers=_cabeceras_gemini(),
+            params={"alt": "sse"},
+            json=cuerpo,
+            stream=True,
+            timeout=(15, 120),
+        )
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError("Error de conexión: " + str(err))
+    if not r.ok:
+        raise RuntimeError(_error_gemini(r))
+
+    r.encoding = "utf-8"
+    hubo_texto = False
+    for linea in r.iter_lines(decode_unicode=True):
+        if not linea or not linea.startswith("data:"):
+            continue
+        dato = linea[5:].strip()
+        if not dato or dato == "[DONE]":
+            continue
+        try:
+            j = json.loads(dato)
+        except ValueError:
+            continue
+        bloqueo = (j.get("promptFeedback") or {}).get("blockReason")
+        if bloqueo:
+            raise RuntimeError(f"Gemini bloqueó la solicitud ({bloqueo}). Intenta reformularla.")
+        for cand in j.get("candidates") or []:
+            for parte in (cand.get("content") or {}).get("parts") or []:
+                texto = parte.get("text")
+                if texto and not parte.get("thought"):
+                    hubo_texto = True
+                    yield texto
+    if not hubo_texto:
+        raise RuntimeError("Gemini no devolvió texto (puede haberse filtrado). Intenta reformular.")
+
+
+def gemini_transcribir(modelo, audio_bytes, mime):
+    """Convierte un audio en texto. Devuelve (ok, texto_o_error)."""
+    cuerpo = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "inlineData": {
+                            "mimeType": mime or "audio/wav",
+                            "data": base64.b64encode(audio_bytes).decode("ascii"),
+                        }
+                    },
+                    {
+                        "text": "Transcribe literalmente este audio en el idioma en que se habla. "
+                        "Devuelve únicamente la transcripción, sin comentarios."
+                    },
+                ],
+            }
+        ]
+    }
+    try:
+        r = requests.post(
+            f"{GEMINI_BASE}{modelo}:generateContent",
+            headers=_cabeceras_gemini(),
+            json=cuerpo,
+            timeout=120,
+        )
+        if not r.ok:
+            return False, _error_gemini(r)
+        partes = r.json()["candidates"][0]["content"]["parts"]
+        texto = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip()
+        if not texto:
+            return False, "No se entendió nada en el audio."
+        return True, texto
+    except requests.exceptions.RequestException as err:
+        return False, "Error de conexión: " + str(err)
+    except Exception:
+        return False, "Respuesta inesperada al transcribir el audio."
+
+
+# ----- Chats guardados -----
+def limpiar_chats(obj):
+    """Valida un diccionario de chats (del archivo o de una importación)."""
+    limpios = {}
+    if not isinstance(obj, dict):
+        return limpios
+    for cid, c in obj.items():
+        if not isinstance(c, dict) or not isinstance(c.get("mensajes"), list):
+            continue
+        mensajes = [
+            {"role": m["role"], "text": m["text"]}
+            for m in c["mensajes"]
+            if isinstance(m, dict)
+            and m.get("role") in ("user", "assistant")
+            and isinstance(m.get("text"), str)
+        ]
+        limpios[str(cid)] = {
+            "titulo": str(c.get("titulo") or TITULO_NUEVO)[:60],
+            "mensajes": mensajes,
+            "actualizado": float(c.get("actualizado") or 0),
+        }
+    return limpios
+
+
+def cargar_chats():
+    try:
+        with open(CHATS_ARCHIVO, "r", encoding="utf-8") as f:
+            return limpiar_chats(json.load(f).get("chats"))
+    except Exception:
+        return {}
+
+
+def guardar_chats():
+    try:
+        tmp = CHATS_ARCHIVO + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"chats": st.session_state["chats"]}, f, ensure_ascii=False)
+        os.replace(tmp, CHATS_ARCHIVO)
+    except Exception:
+        pass  # si no se puede escribir en disco, el chat sigue funcionando en memoria
+
+
+def nuevo_chat():
+    cid = str(int(time.time() * 1000))
+    st.session_state["chats"][cid] = {
+        "titulo": TITULO_NUEVO,
+        "mensajes": [],
+        "actualizado": time.time(),
+    }
+    st.session_state["chat_actual"] = cid
+    guardar_chats()
+
+
+def borrar_chat():
+    cid = st.session_state.get("chat_actual")
+    st.session_state["chats"].pop(cid, None)
+    st.session_state["chat_actual"] = None
+    st.session_state["confirmar_borrado"] = False
+    guardar_chats()
+
+
+def restaurar_sistema():
+    st.session_state["sistema"] = SISTEMA_DEF
+
+
+def regenerar_respuesta():
+    chat = st.session_state["chats"].get(st.session_state.get("chat_actual"))
+    if chat and chat["mensajes"] and chat["mensajes"][-1]["role"] == "assistant":
+        chat["mensajes"].pop()
+        st.session_state["regenerar"] = True
+        guardar_chats()
+
+
+def importar_chats(contenido):
+    try:
+        nuevos = limpiar_chats(json.loads(contenido.decode("utf-8")).get("chats"))
+    except Exception:
+        return 0
+    st.session_state["chats"].update(nuevos)
+    guardar_chats()
+    return len(nuevos)
+
+
+# ----- Mostrar mensajes con bloques de código (copiar y descargar) -----
+def partir_mensaje(texto):
+    """Separa un mensaje en trozos de texto y bloques de código."""
+    trozos = []
+    pos = 0
+    for m in PATRON_CODIGO.finditer(texto):
+        if m.start() > pos:
+            trozos.append({"tipo": "texto", "texto": texto[pos : m.start()]})
+        trozos.append(
+            {"tipo": "codigo", "lenguaje": m.group(1).strip().lower(), "texto": m.group(2).rstrip("\n")}
+        )
+        pos = m.end()
+    if pos < len(texto):
+        trozos.append({"tipo": "texto", "texto": texto[pos:]})
+    return trozos
+
+
+def nombre_descarga(trozos, i, n_codigo):
+    """Intenta sacar el nombre del archivo de la línea previa al bloque de código."""
+    lenguaje = trozos[i]["lenguaje"]
+    ext = EXTENSIONES.get(lenguaje, ".txt" if lenguaje else ".lua")
+    if i > 0 and trozos[i - 1]["tipo"] == "texto":
+        lineas = [x for x in trozos[i - 1]["texto"].strip().splitlines() if x.strip()]
+        if lineas:
+            m = PATRON_ARCHIVO.search(lineas[-1])
+            if m:
+                return m.group(0)
+    return f"codigo_{n_codigo}{ext}"
+
+
+def mostrar_mensaje(texto, clave):
+    trozos = partir_mensaje(texto)
+    n_codigo = 0
+    for i, tz in enumerate(trozos):
+        if tz["tipo"] == "texto":
+            if tz["texto"].strip():
+                st.markdown(tz["texto"])
+        else:
+            n_codigo += 1
+            leng = "lua" if tz["lenguaje"] == "luau" else (tz["lenguaje"] or None)
+            st.code(tz["texto"], language=leng)  # el icono de copiar viene incluido
+            st.download_button(
+                "⬇️ Descargar archivo",
+                data=tz["texto"].encode("utf-8"),
+                file_name=nombre_descarga(trozos, i, n_codigo),
+                mime="text/plain",
+                key=f"dl_{clave}_{n_codigo}",
+            )
+
+
+def pestana_chat():
+    st.subheader("🤖 Chat con IA")
+    if not GEMINI_API_KEY:
+        st.warning(
+            "Falta el secret **GEMINI_API_KEY**. Crea una clave gratis en "
+            "https://aistudio.google.com/apikey y agrégala en los secrets de Streamlit."
+        )
+        return
+
+    if "chats" not in st.session_state:
+        st.session_state["chats"] = cargar_chats()
+        st.session_state["chat_actual"] = None
+    st.session_state.setdefault("audio_n", 0)
+    st.session_state.setdefault("sistema", SISTEMA_DEF)
+    st.session_state.setdefault("modelo_chat", GEMINI_MODELO_DEF)
+
+    chats = st.session_state["chats"]
+    if st.session_state.get("chat_actual") not in chats:
+        if chats:
+            st.session_state["chat_actual"] = max(chats, key=lambda k: chats[k]["actualizado"])
+        else:
+            nuevo_chat()
+            chats = st.session_state["chats"]
+
+    # --- Selector de chat y ajustes ---
+    ids = sorted(chats, key=lambda k: chats[k]["actualizado"], reverse=True)
+    elegido = st.selectbox(
+        "Chat",
+        ids,
+        index=ids.index(st.session_state["chat_actual"]),
+        format_func=lambda k: chats[k]["titulo"],
+        label_visibility="collapsed",
+    )
+    st.session_state["chat_actual"] = elegido
+    chat = chats[elegido]
+
+    c1, c2 = st.columns(2)
+    c1.button("➕ Chat nuevo", on_click=nuevo_chat, use_container_width=True)
+    c2.button(
+        "🔁 Regenerar",
+        on_click=regenerar_respuesta,
+        disabled=not (chat["mensajes"] and chat["mensajes"][-1]["role"] == "assistant"),
+        use_container_width=True,
+    )
+
+    with st.expander("⚙️ Ajustes y chats guardados"):
+        st.selectbox("Modelo", GEMINI_MODELOS, key="modelo_chat")
+        st.text_area(
+            "Instrucciones para la IA",
+            key="sistema",
+            height=200,
+            help="Define cómo responde la IA. Se aplica a todos los chats.",
+        )
+        st.button("Restaurar instrucciones originales", on_click=restaurar_sistema)
+        st.divider()
+        st.checkbox("Confirmo que quiero borrar este chat", key="confirmar_borrado")
+        st.button(
+            "🗑️ Borrar este chat",
+            on_click=borrar_chat,
+            disabled=not st.session_state.get("confirmar_borrado", False),
+        )
+        st.divider()
+        st.download_button(
+            "⬇️ Exportar todos los chats",
+            data=json.dumps({"chats": chats}, ensure_ascii=False, indent=1).encode("utf-8"),
+            file_name="chats_asset_hub.json",
+            mime="application/json",
+        )
+        subido = st.file_uploader("Importar chats (.json)", type=["json"], key="importar_json")
+        if subido is not None and st.button("Importar"):
+            n = importar_chats(subido.getvalue())
+            st.success(f"Se importaron {n} chats." if n else "El archivo no tiene chats válidos.")
+        st.caption(
+            "Los chats se guardan en el servidor de la app. Si la app se reinicia o se vuelve a "
+            "desplegar pueden perderse: usa **Exportar** de vez en cuando para tener respaldo."
+        )
+
+    # --- Zona de mensajes (arriba) y entradas (abajo) ---
+    zona_mensajes = st.container()
+
+    prompt = None
+    desde_audio = False
+    if hasattr(st, "audio_input"):
+        with st.expander("🎤 Hablar con la IA"):
+            audio = st.audio_input("Graba tu mensaje", key=f"audio_{st.session_state['audio_n']}")
+            if audio is not None and st.button("📨 Enviar audio", type="primary"):
+                with st.spinner("Transcribiendo..."):
+                    ok, texto = gemini_transcribir(
+                        st.session_state["modelo_chat"], audio.getvalue(), audio.type
+                    )
+                if ok:
+                    prompt = texto
+                    desde_audio = True
+                else:
+                    st.error(texto)
+
+    escrito = st.chat_input("Escribe tu mensaje...")
+    if escrito:
+        prompt = escrito
+
+    regenerar = st.session_state.pop("regenerar", False)
+    mensajes = chat["mensajes"]
+
+    # --- Mostrar historial y responder ---
+    with zona_mensajes:
+        if not mensajes and not prompt and not regenerar:
+            st.caption("Escribe o graba un mensaje para empezar. Pídele código y te lo da listo para copiar.")
+        for i, m in enumerate(mensajes):
+            with st.chat_message(m["role"]):
+                if m["role"] == "assistant":
+                    mostrar_mensaje(m["text"], f"{elegido}_{i}")
+                else:
+                    st.markdown(m["text"])
+
+        generar = False
+        if prompt:
+            mensajes.append({"role": "user", "text": prompt})
+            if chat["titulo"] == TITULO_NUEVO:
+                chat["titulo"] = " ".join(prompt.split())[:40] or TITULO_NUEVO
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            generar = True
+        elif regenerar and mensajes and mensajes[-1]["role"] == "user":
+            generar = True
+
+        if generar:
+            with st.chat_message("assistant"):
+                estado = st.empty()
+                estado.caption("⏳ Pensando...")
+
+                def trozos():
+                    primero = True
+                    for t in gemini_stream(
+                        st.session_state["modelo_chat"], mensajes, st.session_state["sistema"]
+                    ):
+                        if primero:
+                            estado.empty()
+                            primero = False
+                        yield t
+
+                try:
+                    respuesta = st.write_stream(trozos())
+                except Exception as err:
+                    estado.empty()
+                    st.error(f"❌ {err}")
+                    respuesta = None
+            if respuesta and str(respuesta).strip():
+                mensajes.append({"role": "assistant", "text": str(respuesta)})
+                chat["actualizado"] = time.time()
+                guardar_chats()
+                if desde_audio:
+                    st.session_state["audio_n"] += 1  # limpia la grabación para la próxima
+                st.rerun()  # vuelve a dibujar con botones de copiar y descargar
+            elif prompt:
+                mensajes.pop()  # no deja un mensaje sin respuesta; vuelve a enviarlo
+                if not mensajes:
+                    chat["titulo"] = TITULO_NUEVO
+                st.caption("Tu mensaje no se guardó porque no hubo respuesta. Vuelve a enviarlo.")
+
+
 # ---------- Barra lateral ----------
 with st.sidebar:
     st.header("📦 Asset Hub")
     st.caption(
         "Modelos: .fbx .gltf .glb\n\n"
         "Animaciones: .rbxm (máx. 20 MB)\n\n"
-        "Juegos: .rbxl .rbxlx (máx. 100 MB)"
+        "Juegos: .rbxl .rbxlx (máx. 100 MB)\n\n"
+        "Chat IA: Gemini (texto y audio)"
     )
     if st.button("Cerrar sesión", use_container_width=True):
         st.query_params.clear()
@@ -197,7 +647,7 @@ with st.sidebar:
 
 st.title("📦 Roblox Asset Hub")
 
-tab_assets, tab_juego = st.tabs(["📦 Assets", "🎮 Publicar juego"])
+tab_assets, tab_juego, tab_chat = st.tabs(["📦 Assets", "🎮 Publicar juego", "🤖 Chat IA"])
 
 # =====================================================================
 # PESTAÑA 1: ASSETS
@@ -373,3 +823,9 @@ with tab_juego:
 
     if not listo:
         st.caption("Completa los dos IDs (solo números), sube el archivo y marca la casilla.")
+
+# =====================================================================
+# PESTAÑA 3: CHAT IA
+# =====================================================================
+with tab_chat:
+    pestana_chat()
