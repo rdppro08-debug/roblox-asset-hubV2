@@ -1,7 +1,8 @@
-# Roblox Asset Hub v6 (Streamlit):
-#  - Pestaña 1: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)  -> usa ROBLOX_API_KEY
-#  - Pestaña 2: publicar juegos (.rbxl/.rbxlx) en un place existente -> usa ROBLOX_PLACE_API_KEY
-#  - Pestaña 3: chat con IA (Gemini / Claude / ChatGPT): texto, audio, chats guardados y código copiable
+# Roblox Asset Hub v7 (Streamlit) - interfaz estilo app de chat
+#  - Menú lateral (☰): Chat IA con historial y búsqueda, Assets, Publicar juego
+#  - Chat IA (Gemini / Claude / ChatGPT): texto, audio, chats guardados y código copiable
+#  - Assets: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)  -> usa ROBLOX_API_KEY
+#  - Publicar juegos (.rbxl/.rbxlx) en un place existente      -> usa ROBLOX_PLACE_API_KEY
 #
 # Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
 # Secrets opcionales:
@@ -14,7 +15,10 @@
 # Basta con tener UNA de las tres claves de IA; el selector solo muestra las que existan.
 
 import base64
+import datetime
 import hmac
+import html
+import inspect
 import json
 import os
 import re
@@ -22,8 +26,14 @@ import time
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Roblox Asset Hub", page_icon="📦", layout="centered")
+st.set_page_config(
+    page_title="Roblox Asset Hub",
+    page_icon="📦",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
 
 
 def secreto(nombre):
@@ -45,9 +55,129 @@ GEMINI_API_KEY = secreto("GEMINI_API_KEY")
 ANTHROPIC_API_KEY = secreto("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = secreto("OPENAI_API_KEY")
 
+# ---------- Estilo global ----------
+ESTILO_GLOBAL = """
+<style>
+/* Fondo con brillo azul abajo (funciona en tema oscuro y claro) */
+.stApp {
+    background-image: radial-gradient(ellipse 130% 42% at 50% 110%, rgba(66,99,235,0.36), transparent 70%);
+    background-attachment: fixed;
+}
+header[data-testid="stHeader"] { background: transparent; }
+.block-container { max-width: 760px; padding-top: 3.2rem; padding-bottom: 7rem; }
+[data-testid="stBottom"], [data-testid="stBottom"] > div { background: transparent !important; }
+
+/* Columnas siempre en fila, también en el celular */
+div[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem; }
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"] { min-width: 0 !important; }
+
+/* Botones en forma de píldora */
+.stButton > button, .stDownloadButton > button,
+[data-testid="stLinkButton"] a, a[data-testid="stBaseLinkButton-secondary"],
+[data-testid="stPopover"] > button, [data-testid="stPopover"] button {
+    border-radius: 999px !important;
+}
+.stButton > button[kind="primary"], button[data-testid="stBaseButton-primary"],
+.stDownloadButton > button[kind="primary"] {
+    background: #3d6bf0; border-color: #3d6bf0; color: #fff;
+}
+.stButton > button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover {
+    background: #5580ff; border-color: #5580ff; color: #fff;
+}
+
+/* Campos, tarjetas y subida de archivos */
+[data-baseweb="input"], [data-baseweb="textarea"], [data-baseweb="select"] > div { border-radius: 14px !important; }
+[data-testid="stFileUploaderDropzone"] { border-radius: 20px; border: 1.5px dashed rgba(128,128,128,0.55); }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 18px; }
+[data-testid="stExpander"] { border-radius: 16px; }
+[data-testid="stMetric"] { background: rgba(128,128,128,0.12); border-radius: 16px; padding: 0.6rem 0.9rem; }
+
+/* Encabezados de página */
+.titulo-pagina { font-size: 1.7rem; font-weight: 600; margin: 0 0 0.15rem 0; }
+.sub-pagina { opacity: 0.65; font-size: 0.9rem; margin-bottom: 1rem; }
+
+/* Saludo central (como las apps de chat) */
+.saludo { text-align: center; margin: 15vh 0 1.4rem 0; }
+.saludo .estrella {
+    font-size: 3.3rem; line-height: 1;
+    background: conic-gradient(from 200deg, #ea4335, #fbbc04, #34a853, #4285f4, #ea4335);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent; -webkit-text-fill-color: transparent;
+}
+.saludo .texto { font-size: 2.1rem; font-weight: 500; line-height: 1.25; margin-top: 0.7rem; }
+
+/* Menú lateral */
+section[data-testid="stSidebar"] { border-right: 1px solid rgba(128,128,128,0.18); }
+.marca-lateral { font-size: 1.25rem; font-weight: 600; margin: 0.2rem 0 0.6rem 0; }
+.grupo-chats { opacity: 0.55; font-size: 0.75rem; margin: 0.9rem 0 0.2rem 0.3rem; font-weight: 600; }
+section[data-testid="stSidebar"] .stButton > button {
+    justify-content: flex-start; text-align: left; border: none; background: transparent;
+    padding: 0.35rem 0.8rem; min-height: 2.3rem; box-shadow: none;
+}
+section[data-testid="stSidebar"] .stButton > button > div { justify-content: flex-start; width: 100%; }
+section[data-testid="stSidebar"] .stButton > button p {
+    text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%;
+}
+section[data-testid="stSidebar"] .stButton > button:hover { background: rgba(128,128,128,0.16); }
+section[data-testid="stSidebar"] .stButton > button[kind="primary"],
+section[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] {
+    background: rgba(79,140,255,0.25); color: inherit;
+}
+
+/* Mensajes: tú en burbuja a la derecha, la IA sin burbuja */
+div[data-testid="stChatMessage"] {
+    background: transparent; border: none; padding: 0.2rem 0; margin-bottom: 0.7rem;
+}
+div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
+div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    flex-direction: row-reverse;
+    background: rgba(128,128,128,0.22);
+    border-radius: 22px 22px 6px 22px;
+    padding: 0.65rem 1rem;
+    margin-left: auto;
+    width: fit-content;
+    max-width: 86%;
+}
+div[data-testid="stChatMessageAvatarUser"], div[data-testid="chatAvatarIcon-user"] { display: none; }
+div[data-testid="stChatMessageAvatarAssistant"], div[data-testid="chatAvatarIcon-assistant"] {
+    background: transparent;
+}
+div[data-testid="stChatMessage"] p { margin-bottom: 0.4rem; }
+
+/* Caja de mensaje redondeada */
+div[data-testid="stChatInput"] {
+    border-radius: 30px;
+    background: rgba(128,128,128,0.18);
+    border: 1px solid rgba(128,128,128,0.28);
+}
+div[data-testid="stChatInput"] > div {
+    border-radius: 30px; border: none !important; background: transparent !important; box-shadow: none !important;
+}
+div[data-testid="stChatInput"]:focus-within { border-color: rgba(90,130,255,0.9); }
+div[data-testid="stChatInput"] textarea { font-size: 1rem; }
+
+/* Indicador "escribiendo" */
+.escribiendo { display: inline-flex; gap: 5px; padding: 6px 2px; }
+.escribiendo span {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: rgba(160,160,160,0.9);
+    animation: salto 1.2s infinite ease-in-out;
+}
+.escribiendo span:nth-child(2) { animation-delay: 0.2s; }
+.escribiendo span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes salto {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-6px); opacity: 1; }
+}
+</style>
+"""
+
 if not (API_KEY and USER_ID.isdigit() and APP_USER and APP_PASS):
     st.error("Faltan secrets: ROBLOX_API_KEY, ROBLOX_USER_ID (numerico), APP_USER, APP_PASS.")
     st.stop()
+
+st.markdown(ESTILO_GLOBAL, unsafe_allow_html=True)
 
 # ---------- Login (con sesion recordada por 30 dias) ----------
 DURACION_SESION = 30 * 24 * 3600  # 30 dias
@@ -87,7 +217,11 @@ if not st.session_state.get("autenticado"):
         st.session_state["autenticado"] = True
 
 if not st.session_state.get("autenticado"):
-    st.title("📦 Roblox Asset Hub")
+    st.markdown(
+        '<div class="saludo" style="margin-top:6vh"><div class="estrella">✦</div>'
+        '<div class="texto">Roblox Asset Hub</div></div>',
+        unsafe_allow_html=True,
+    )
     st.caption("Inicia sesión para continuar.")
     u = st.text_input("Usuario", key="login_u")
     mostrar = st.checkbox("Mostrar contraseña", value=False)
@@ -219,6 +353,12 @@ NIVELES = {"Automático": None, "Bajo": "low", "Medio": "medium", "Alto": "high"
 MAX_MENSAJES_CONTEXTO = 30  # cuantos mensajes anteriores se envian a la IA
 CHATS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chats_guardados.json")
 TITULO_NUEVO = "Chat nuevo"
+SECCIONES = ["💬 Chat IA", "📦 Assets", "🎮 Publicar juego"]
+
+try:
+    ENTRADA_AUDIO = "accept_audio" in inspect.signature(st.chat_input).parameters
+except Exception:
+    ENTRADA_AUDIO = False
 
 SISTEMA_DEF = (
     "Eres un asistente experto en programación, especialmente en Roblox Studio y Luau "
@@ -253,47 +393,6 @@ EXTENSIONES = {
     "markdown": ".md",
 }
 
-ESTILO_CHAT = """
-<style>
-/* Burbujas */
-div[data-testid="stChatMessage"] {
-    background: rgba(128,128,128,0.10);
-    border-radius: 18px 18px 18px 4px;
-    padding: 0.7rem 0.9rem;
-    margin-bottom: 0.6rem;
-    border: none;
-}
-div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
-div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-    flex-direction: row-reverse;
-    background: rgba(79,140,255,0.22);
-    border-radius: 18px 18px 4px 18px;
-    margin-left: auto;
-    width: fit-content;
-    max-width: 88%;
-}
-div[data-testid="stChatMessageAvatarUser"],
-div[data-testid="chatAvatarIcon-user"] { display: none; }
-div[data-testid="stChatMessage"] p { margin-bottom: 0.4rem; }
-/* Caja de texto redondeada */
-div[data-testid="stChatInput"] { border-radius: 26px; }
-div[data-testid="stChatInput"] textarea { font-size: 1rem; }
-/* Indicador "escribiendo" */
-.escribiendo { display: inline-flex; gap: 5px; padding: 6px 2px; }
-.escribiendo span {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: rgba(160,160,160,0.9);
-    animation: salto 1.2s infinite ease-in-out;
-}
-.escribiendo span:nth-child(2) { animation-delay: 0.2s; }
-.escribiendo span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes salto {
-    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-    30% { transform: translateY(-6px); opacity: 1; }
-}
-.cabecera-chat { text-align: center; opacity: 0.65; font-size: 0.8rem; margin: -0.3rem 0 0.6rem 0; }
-</style>
-"""
 PUNTOS_ESCRIBIENDO = '<div class="escribiendo"><span></span><span></span><span></span></div>'
 
 
@@ -562,17 +661,28 @@ def cargar_chats():
         return {}
 
 
+def _con_mensajes():
+    return {k: v for k, v in st.session_state["chats"].items() if v["mensajes"]}
+
+
 def guardar_chats():
     try:
         tmp = CHATS_ARCHIVO + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"chats": st.session_state["chats"]}, f, ensure_ascii=False)
+            json.dump({"chats": _con_mensajes()}, f, ensure_ascii=False)
         os.replace(tmp, CHATS_ARCHIVO)
     except Exception:
         pass  # si no se puede escribir en disco, el chat sigue funcionando en memoria
 
 
-def nuevo_chat():
+def _podar_vacios():
+    """Quita los chats sin mensajes (menos el actual) para no llenar la lista."""
+    ss = st.session_state
+    for k in [k for k, v in ss["chats"].items() if not v["mensajes"] and k != ss.get("chat_actual")]:
+        ss["chats"].pop(k, None)
+
+
+def _crear_chat():
     cid = str(int(time.time() * 1000))
     st.session_state["chats"][cid] = {
         "titulo": TITULO_NUEVO,
@@ -580,15 +690,43 @@ def nuevo_chat():
         "actualizado": time.time(),
     }
     st.session_state["chat_actual"] = cid
-    guardar_chats()
+    _podar_vacios()
+
+
+def pedir_cerrar_menu():
+    st.session_state["cerrar_menu"] = True
+
+
+def nuevo_chat():
+    ss = st.session_state
+    actual = ss["chats"].get(ss.get("chat_actual"))
+    if actual is None or actual["mensajes"]:
+        _crear_chat()
+    pedir_cerrar_menu()
+
+
+def seleccionar_chat(cid):
+    ss = st.session_state
+    if cid in ss["chats"]:
+        ss["chat_actual"] = cid
+        _podar_vacios()
+    ss["buscar_chats"] = ""
+    pedir_cerrar_menu()
 
 
 def borrar_chat():
-    cid = st.session_state.get("chat_actual")
-    st.session_state["chats"].pop(cid, None)
-    st.session_state["chat_actual"] = None
-    st.session_state["confirmar_borrado"] = False
+    ss = st.session_state
+    ss["chats"].pop(ss.get("chat_actual"), None)
+    ss["chat_actual"] = None
+    ss["confirmar_borrado"] = False
     guardar_chats()
+
+
+def renombrar_chat(cid):
+    nuevo = st.session_state.get(f"ren_{cid}", "").strip()
+    if nuevo and cid in st.session_state["chats"]:
+        st.session_state["chats"][cid]["titulo"] = nuevo[:60]
+        guardar_chats()
 
 
 def restaurar_sistema():
@@ -615,6 +753,52 @@ def importar_chats(contenido):
     st.session_state["chats"].update(nuevos)
     guardar_chats()
     return len(nuevos)
+
+
+def iniciar_estado():
+    ss = st.session_state
+    if "chats" not in ss:
+        ss["chats"] = cargar_chats()
+        ss["chat_actual"] = None
+    ss.setdefault("seccion", SECCIONES[0])
+    ss.setdefault("audio_n", 0)
+    ss.setdefault("sistema", SISTEMA_DEF)
+    ss.setdefault("razonamiento", "Bajo")
+    ss.setdefault("buscar_chats", "")
+    if PROVEEDORES and ss.get("proveedor") not in PROVEEDORES:
+        ss["proveedor"] = PROVEEDORES[0]
+    for p in MODELOS:
+        ss.setdefault(f"modelo_{p}", MODELO_DEF[p])
+        ss.setdefault(f"modelo_custom_{p}", "")
+    if ss.get("chat_actual") not in ss["chats"]:
+        _crear_chat()
+
+
+def modelo_actual(proveedor):
+    custom = st.session_state.get(f"modelo_custom_{proveedor}", "").strip()
+    return custom or st.session_state.get(f"modelo_{proveedor}", MODELO_DEF[proveedor])
+
+
+def cerrar_menu_si_toca():
+    """En el celular, cierra el menú lateral después de elegir algo."""
+    if st.session_state.pop("cerrar_menu", False):
+        components.html(
+            """<script>
+            setTimeout(function () {
+              try {
+                const d = window.parent.document;
+                const sb = d.querySelector('section[data-testid="stSidebar"]');
+                if (window.parent.innerWidth < 900 && sb && sb.getAttribute('aria-expanded') !== 'false') {
+                  const b = d.querySelector('[data-testid="stSidebarCollapseButton"] button')
+                    || d.querySelector('[data-testid="stSidebarCollapseButton"]')
+                    || sb.querySelector('button[kind="header"]');
+                  if (b) b.click();
+                }
+              } catch (e) {}
+            }, 150);
+            </script>""",
+            height=0,
+        )
 
 
 # ----- Mostrar mensajes con bloques de código (copiar y descargar) -----
@@ -667,97 +851,99 @@ def mostrar_mensaje(texto, clave):
             )
 
 
-def modelo_actual(proveedor):
-    custom = st.session_state.get(f"modelo_custom_{proveedor}", "").strip()
-    return custom or st.session_state.get(f"modelo_{proveedor}", MODELO_DEF[proveedor])
+def _campo(valor, nombre):
+    try:
+        return valor[nombre]
+    except Exception:
+        return getattr(valor, nombre, None)
 
 
-def pestana_chat():
-    if not PROVEEDORES:
-        st.warning(
-            "Falta una clave de IA. Agrega en los secrets de Streamlit al menos una: "
-            "**GEMINI_API_KEY** (gratis en https://aistudio.google.com/apikey), "
-            "**ANTHROPIC_API_KEY** u **OPENAI_API_KEY**."
-        )
-        return
+# =====================================================================
+# MENÚ LATERAL (☰)
+# =====================================================================
+def _grupo_fecha(ts):
+    dias = (datetime.date.today() - datetime.date.fromtimestamp(ts)).days
+    if dias <= 0:
+        return "Hoy"
+    if dias == 1:
+        return "Ayer"
+    if dias <= 7:
+        return "Últimos 7 días"
+    return "Anteriores"
 
-    st.markdown(ESTILO_CHAT, unsafe_allow_html=True)
 
-    if "chats" not in st.session_state:
-        st.session_state["chats"] = cargar_chats()
-        st.session_state["chat_actual"] = None
-    st.session_state.setdefault("audio_n", 0)
-    st.session_state.setdefault("sistema", SISTEMA_DEF)
-    st.session_state.setdefault("razonamiento", "Bajo")
-    if st.session_state.get("proveedor") not in PROVEEDORES:
-        st.session_state["proveedor"] = PROVEEDORES[0]
-    for p in MODELOS:
-        st.session_state.setdefault(f"modelo_{p}", MODELO_DEF[p])
-        st.session_state.setdefault(f"modelo_custom_{p}", "")
-
-    chats = st.session_state["chats"]
-    if st.session_state.get("chat_actual") not in chats:
-        if chats:
-            st.session_state["chat_actual"] = max(chats, key=lambda k: chats[k]["actualizado"])
-        else:
-            nuevo_chat()
-            chats = st.session_state["chats"]
-
-    # --- Selector de chat y ajustes ---
-    ids = sorted(chats, key=lambda k: chats[k]["actualizado"], reverse=True)
-    elegido = st.selectbox(
-        "Chat",
-        ids,
-        index=ids.index(st.session_state["chat_actual"]),
-        format_func=lambda k: chats[k]["titulo"],
+def lista_chats_lateral():
+    ss = st.session_state
+    chats = ss["chats"]
+    st.button("✏️  Nuevo chat", on_click=nuevo_chat, use_container_width=True, key="side_nuevo")
+    q = st.text_input(
+        "Buscar",
+        key="buscar_chats",
+        placeholder="🔍 Buscar chats",
         label_visibility="collapsed",
     )
-    st.session_state["chat_actual"] = elegido
-    chat = chats[elegido]
-
-    c1, c2 = st.columns(2)
-    c1.button("➕ Chat nuevo", on_click=nuevo_chat, use_container_width=True)
-    c2.button(
-        "🔁 Regenerar",
-        on_click=regenerar_respuesta,
-        disabled=not (chat["mensajes"] and chat["mensajes"][-1]["role"] == "assistant"),
-        use_container_width=True,
-    )
-
-    with st.expander("⚙️ Ajustes y chats guardados"):
-        if len(PROVEEDORES) > 1:
-            st.radio("IA", PROVEEDORES, key="proveedor", horizontal=True)
-        prov_sel = st.session_state["proveedor"]
-        st.selectbox("Modelo", MODELOS[prov_sel], key=f"modelo_{prov_sel}")
-        st.text_input(
-            "Modelo personalizado (opcional)",
-            key=f"modelo_custom_{prov_sel}",
-            placeholder="Si lo llenas, se usa este en lugar del de arriba",
+    qn = q.strip().lower()
+    visibles = [
+        cid
+        for cid, c in chats.items()
+        if c["mensajes"]
+        and (
+            not qn
+            or qn in c["titulo"].lower()
+            or any(qn in m["text"].lower() for m in c["mensajes"])
         )
-        if prov_sel == "Gemini":
-            st.select_slider(
-                "Razonamiento (Bajo = más rápido)",
-                options=list(NIVELES),
-                key="razonamiento",
-            )
+    ]
+    visibles.sort(key=lambda k: chats[k]["actualizado"], reverse=True)
+    if not qn:
+        visibles = visibles[:40]
+
+    if not visibles:
+        st.caption("Aún no hay chats guardados." if not qn else "Sin resultados.")
+    grupo_prev = None
+    for cid in visibles:
+        c = chats[cid]
+        g = _grupo_fecha(c["actualizado"])
+        if g != grupo_prev:
+            st.markdown(f'<div class="grupo-chats">{g}</div>', unsafe_allow_html=True)
+            grupo_prev = g
+        titulo = c["titulo"] if len(c["titulo"]) <= 34 else c["titulo"][:33] + "…"
+        st.button(
+            titulo,
+            key=f"chat_{cid}",
+            on_click=seleccionar_chat,
+            args=(cid,),
+            type="primary" if cid == ss["chat_actual"] else "secondary",
+            use_container_width=True,
+        )
+
+    chat = chats[ss["chat_actual"]]
+    with st.expander("⚙️ Ajustes del chat"):
         st.text_area(
             "Instrucciones para la IA",
             key="sistema",
-            height=200,
+            height=180,
             help="Define cómo responde la IA. Se aplica a todos los chats.",
         )
         st.button("Restaurar instrucciones originales", on_click=restaurar_sistema)
-        st.divider()
-        st.checkbox("Confirmo que quiero borrar este chat", key="confirmar_borrado")
-        st.button(
-            "🗑️ Borrar este chat",
-            on_click=borrar_chat,
-            disabled=not st.session_state.get("confirmar_borrado", False),
-        )
+        if chat["mensajes"]:
+            cid = ss["chat_actual"]
+            st.text_input(
+                "Renombrar este chat",
+                value=chat["titulo"],
+                key=f"ren_{cid}",
+                on_change=renombrar_chat,
+                args=(cid,),
+            )
+            st.checkbox("Confirmo que quiero borrar este chat", key="confirmar_borrado")
+            st.button(
+                "🗑️ Borrar este chat",
+                on_click=borrar_chat,
+                disabled=not ss.get("confirmar_borrado", False),
+            )
         st.divider()
         st.download_button(
             "⬇️ Exportar todos los chats",
-            data=json.dumps({"chats": chats}, ensure_ascii=False, indent=1).encode("utf-8"),
+            data=json.dumps({"chats": _con_mensajes()}, ensure_ascii=False, indent=1).encode("utf-8"),
             file_name="chats_asset_hub.json",
             mime="application/json",
         )
@@ -770,60 +956,159 @@ def pestana_chat():
             "desplegar pueden perderse: usa **Exportar** de vez en cuando para tener respaldo."
         )
 
-    proveedor = st.session_state["proveedor"]
+
+def barra_lateral():
+    with st.sidebar:
+        st.markdown('<div class="marca-lateral">✦ Asset Hub</div>', unsafe_allow_html=True)
+        st.radio(
+            "Menú",
+            SECCIONES,
+            key="seccion",
+            label_visibility="collapsed",
+            on_change=pedir_cerrar_menu,
+        )
+        if st.session_state["seccion"] == SECCIONES[0] and PROVEEDORES:
+            st.divider()
+            lista_chats_lateral()
+        st.divider()
+        if st.button("🚪  Cerrar sesión", use_container_width=True, key="side_salir"):
+            st.query_params.clear()
+            st.session_state.clear()
+            st.rerun()
+
+
+# =====================================================================
+# PÁGINA: CHAT IA
+# =====================================================================
+def pagina_chat():
+    ss = st.session_state
+    if not PROVEEDORES:
+        st.markdown(
+            '<div class="titulo-pagina">💬 Chat IA</div>', unsafe_allow_html=True
+        )
+        st.warning(
+            "Falta una clave de IA. Agrega en los secrets de Streamlit al menos una: "
+            "**GEMINI_API_KEY** (gratis en https://aistudio.google.com/apikey), "
+            "**ANTHROPIC_API_KEY** u **OPENAI_API_KEY**."
+        )
+        return
+
+    chats = ss["chats"]
+    elegido = ss["chat_actual"]
+    chat = chats[elegido]
+    mensajes = chat["mensajes"]
+
+    # --- Barra superior: modelo (como el selector de arriba) y chat nuevo ---
+    c_izq, c_der = st.columns([5, 1])
+    with c_izq:
+        etiqueta = f"{ss['proveedor']} · {modelo_actual(ss['proveedor'])}"
+        if hasattr(st, "popover"):
+            contenedor = st.popover(etiqueta)
+        else:
+            contenedor = st.expander("⚙️ " + etiqueta)
+        with contenedor:
+            if len(PROVEEDORES) > 1:
+                st.radio("IA", PROVEEDORES, key="proveedor", horizontal=True)
+            prov_sel = ss["proveedor"]
+            st.selectbox("Modelo", MODELOS[prov_sel], key=f"modelo_{prov_sel}")
+            st.text_input(
+                "Modelo personalizado (opcional)",
+                key=f"modelo_custom_{prov_sel}",
+                placeholder="Si lo llenas, se usa este",
+            )
+            if prov_sel == "Gemini":
+                st.select_slider(
+                    "Razonamiento (Bajo = más rápido)",
+                    options=list(NIVELES),
+                    key="razonamiento",
+                )
+    c_der.button("✏️", on_click=nuevo_chat, key="top_nuevo", help="Chat nuevo", use_container_width=True)
+
+    proveedor = ss["proveedor"]
     modelo = modelo_actual(proveedor)
-    nivel = NIVELES.get(st.session_state["razonamiento"])
-    st.markdown(f'<div class="cabecera-chat">{proveedor} · {modelo}</div>', unsafe_allow_html=True)
+    nivel = NIVELES.get(ss["razonamiento"])
 
     # --- Zona de mensajes (arriba) y entradas (abajo) ---
     zona_mensajes = st.container()
 
-    prompt = st.session_state.pop("prompt_pendiente", None)
+    prompt = ss.pop("prompt_pendiente", None)
     desde_audio = False
-    if GEMINI_API_KEY and hasattr(st, "audio_input"):
+    error_audio = None
+
+    if not ENTRADA_AUDIO and GEMINI_API_KEY and hasattr(st, "audio_input"):
         with st.expander("🎤 Hablar con la IA"):
-            audio = st.audio_input("Graba tu mensaje", key=f"audio_{st.session_state['audio_n']}")
+            audio = st.audio_input("Graba tu mensaje", key=f"audio_{ss['audio_n']}")
             if audio is not None and st.button("📨 Enviar audio", type="primary"):
                 with st.spinner("Transcribiendo..."):
-                    ok, texto = gemini_transcribir(
-                        st.session_state.get("modelo_Gemini", MODELO_DEF["Gemini"]),
-                        audio.getvalue(),
-                        audio.type,
-                    )
+                    ok, texto = gemini_transcribir(modelo_actual("Gemini"), audio.getvalue(), audio.type)
                 if ok:
                     prompt = texto
                     desde_audio = True
                 else:
-                    st.error(texto)
+                    error_audio = texto
 
-    escrito = st.chat_input("Escribe tu mensaje...")
-    if escrito:
-        prompt = escrito
+    marcador = f"Pregúntale a {proveedor}…"
+    if ENTRADA_AUDIO:
+        entrada = st.chat_input(marcador, accept_audio=True)
+    else:
+        entrada = st.chat_input(marcador)
 
-    regenerar = st.session_state.pop("regenerar", False)
-    mensajes = chat["mensajes"]
+    if entrada:
+        if isinstance(entrada, str):
+            prompt = entrada
+        else:
+            texto_in = _campo(entrada, "text")
+            audio_in = _campo(entrada, "audio")
+            if texto_in and str(texto_in).strip():
+                prompt = str(texto_in)
+            elif audio_in is not None:
+                if not GEMINI_API_KEY:
+                    error_audio = "Para usar audio hace falta GEMINI_API_KEY (la transcripción usa Gemini)."
+                else:
+                    with st.spinner("Transcribiendo..."):
+                        ok, texto = gemini_transcribir(
+                            modelo_actual("Gemini"),
+                            audio_in.getvalue(),
+                            getattr(audio_in, "type", None) or "audio/wav",
+                        )
+                    if ok:
+                        prompt = texto
+                    else:
+                        error_audio = texto
+
+    regenerar = ss.pop("regenerar", False)
 
     # --- Mostrar historial y responder ---
     with zona_mensajes:
+        if error_audio:
+            st.error(error_audio)
+
         if not mensajes and not prompt and not regenerar:
-            st.markdown("##### 👋 ¡Hola! ¿Qué creamos hoy?")
-            st.caption("Escribe, graba un audio o elige una idea para empezar.")
+            st.markdown(
+                '<div class="saludo"><div class="estrella">✦</div>'
+                f'<div class="texto">¿Cómo puedo ayudarte,<br>{html.escape(APP_USER)}?</div></div>',
+                unsafe_allow_html=True,
+            )
             for i in range(0, len(SUGERENCIAS), 2):
                 cols = st.columns(2)
-                for col, (etiqueta, texto) in zip(cols, SUGERENCIAS[i : i + 2]):
+                for col, (etiq, texto) in zip(cols, SUGERENCIAS[i : i + 2]):
                     col.button(
-                        etiqueta,
-                        key=f"sug_{i}_{etiqueta}",
+                        etiq,
+                        key=f"sug_{i}_{etiq}",
                         on_click=elegir_sugerencia,
                         args=(texto,),
                         use_container_width=True,
                     )
+
         for i, m in enumerate(mensajes):
-            with st.chat_message(m["role"], avatar="🤖" if m["role"] == "assistant" else None):
+            with st.chat_message(m["role"], avatar="✨" if m["role"] == "assistant" else None):
                 if m["role"] == "assistant":
                     mostrar_mensaje(m["text"], f"{elegido}_{i}")
                 else:
                     st.markdown(m["text"])
+
+        if mensajes and mensajes[-1]["role"] == "assistant" and not prompt and not regenerar:
+            st.button("🔁 Regenerar", on_click=regenerar_respuesta, key="btn_regenerar")
 
         generar_resp = False
         if prompt:
@@ -837,13 +1122,13 @@ def pestana_chat():
             generar_resp = True
 
         if generar_resp:
-            with st.chat_message("assistant", avatar="🤖"):
+            with st.chat_message("assistant", avatar="✨"):
                 estado = st.empty()
                 estado.markdown(PUNTOS_ESCRIBIENDO, unsafe_allow_html=True)
 
                 def trozos():
                     primero = True
-                    for t in generar(proveedor, modelo, mensajes, st.session_state["sistema"], nivel):
+                    for t in generar(proveedor, modelo, mensajes, ss["sistema"], nivel):
                         if primero:
                             estado.empty()
                             primero = False
@@ -860,7 +1145,7 @@ def pestana_chat():
                 chat["actualizado"] = time.time()
                 guardar_chats()
                 if desde_audio:
-                    st.session_state["audio_n"] += 1  # limpia la grabación para la próxima
+                    ss["audio_n"] += 1  # limpia la grabación para la próxima
                 st.rerun()  # vuelve a dibujar con botones de copiar y descargar
             elif prompt:
                 mensajes.pop()  # no deja un mensaje sin respuesta; vuelve a enviarlo
@@ -869,64 +1154,62 @@ def pestana_chat():
                 st.caption("Tu mensaje no se guardó porque no hubo respuesta. Vuelve a enviarlo.")
 
 
-# ---------- Barra lateral ----------
-with st.sidebar:
-    st.header("📦 Asset Hub")
-    st.caption(
-        "Modelos: .fbx .gltf .glb\n\n"
-        "Animaciones: .rbxm (máx. 20 MB)\n\n"
-        "Juegos: .rbxl .rbxlx (máx. 100 MB)\n\n"
-        "Chat IA: " + (" / ".join(PROVEEDORES) if PROVEEDORES else "sin configurar")
-    )
-    if st.button("Cerrar sesión", use_container_width=True):
-        st.query_params.clear()
-        st.session_state.clear()
-        st.rerun()
-
-st.title("📦 Roblox Asset Hub")
-
-tab_assets, tab_juego, tab_chat = st.tabs(["📦 Assets", "🎮 Publicar juego", "🤖 Chat IA"])
-
 # =====================================================================
-# PESTAÑA 1: ASSETS
+# PÁGINA: ASSETS
 # =====================================================================
-with tab_assets:
-    st.subheader("1. Elige tus archivos")
-    archivos = st.file_uploader(
-        "Archivos",
-        type=["fbx", "gltf", "glb", "rbxm"],
-        accept_multiple_files=True,
-        label_visibility="collapsed",
-        key="uploader_assets",
+def titulo_pagina(icono, titulo, sub):
+    st.markdown(
+        f'<div class="titulo-pagina">{icono} {titulo}</div><div class="sub-pagina">{sub}</div>',
+        unsafe_allow_html=True,
     )
-    tipo_rbxm = st.radio(
-        "Los archivos .rbxm son:", ["Animación", "Modelo"], horizontal=True
+
+
+def pagina_assets():
+    titulo_pagina(
+        "📦",
+        "Subir assets",
+        "Modelos .fbx .gltf .glb y animaciones .rbxm (máx. 20 MB cada uno).",
     )
+
+    with st.container(border=True):
+        st.markdown("**1 · Elige tus archivos**")
+        archivos = st.file_uploader(
+            "Archivos",
+            type=["fbx", "gltf", "glb", "rbxm"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            key="uploader_assets",
+        )
+        if archivos:
+            total_mb = sum(f.size for f in archivos) / (1024 * 1024)
+            st.caption(f"{len(archivos)} archivo(s) · {total_mb:.1f} MB en total")
+        tipo_rbxm = st.radio(
+            "Los archivos .rbxm son:", ["Animación", "Modelo"], horizontal=True
+        )
 
     nombres = []
     descripcion = "Subido desde Asset Hub."
     if archivos:
-        st.subheader("2. Nombres y descripción")
-        prefijo = st.text_input(
-            "Prefijo opcional (se añade al inicio de todos los nombres)",
-            placeholder="Ej: Katana_",
-        )
-        descripcion = st.text_input("Descripción (para todos)", value=descripcion)
-
-        for i, f in enumerate(archivos):
-            base = os.path.splitext(f.name)[0]
-            n = st.text_input(
-                f"📄 {f.name}",
-                value=base,
-                max_chars=50,
-                key=f"nombre_{i}_{f.name}_{f.size}",
+        with st.container(border=True):
+            st.markdown("**2 · Nombres y descripción**")
+            prefijo = st.text_input(
+                "Prefijo opcional (se añade al inicio de todos los nombres)",
+                placeholder="Ej: Katana_",
             )
-            final = (prefijo.strip() + n.strip())[:50] or "MiAsset"
-            nombres.append(final)
-        st.caption("Roblox permite nombres de hasta 50 caracteres.")
+            descripcion = st.text_input("Descripción (para todos)", value=descripcion)
 
-    if archivos:
-        st.subheader("3. Subir")
+            for i, f in enumerate(archivos):
+                base = os.path.splitext(f.name)[0]
+                n = st.text_input(
+                    f"📄 {f.name}",
+                    value=base,
+                    max_chars=50,
+                    key=f"nombre_{i}_{f.name}_{f.size}",
+                )
+                final = (prefijo.strip() + n.strip())[:50] or "MiAsset"
+                nombres.append(final)
+            st.caption("Roblox permite nombres de hasta 50 caracteres.")
+
     if st.button(
         "🚀 Subir a Roblox",
         type="primary",
@@ -970,37 +1253,47 @@ with tab_assets:
             barra.progress((i + 1) / len(archivos))
 
         estado.empty()
+        barra.empty()
         st.session_state["resultados"] = filas
 
     if st.session_state.get("resultados"):
         filas = st.session_state["resultados"]
         ok_n = sum(1 for x in filas if x["Resultado"].startswith("✅"))
         st.divider()
-        st.subheader("Resultados")
+        st.markdown("### Resultados")
         c1, c2, c3 = st.columns(3)
         c1.metric("Total", len(filas))
         c2.metric("Correctos", ok_n)
         c3.metric("Con error", len(filas) - ok_n)
 
-        st.dataframe(filas, hide_index=True)
+        for x in filas:
+            with st.container(border=True):
+                st.markdown(f"**{x['Nombre']}** · {x['Resultado']}")
+                if x["rbxassetid"]:
+                    st.code(x["rbxassetid"], language=None)
+                st.caption(f"{x['Archivo']} · {x['Detalle']}")
 
         ids = [f"{x['Nombre']}: {x['rbxassetid']}" for x in filas if x["rbxassetid"]]
         if ids:
-            st.text_area("Copiar IDs", "\n".join(ids), height=120)
-
-        for x in filas:
-            if x["Resultado"].startswith("❌"):
-                st.error(f"{x['Nombre']}: {x['Detalle']}")
+            st.markdown("**Copiar todos los IDs**")
+            st.code("\n".join(ids), language=None)
 
         st.link_button(
-            "Mis creaciones en Roblox", "https://create.roblox.com/dashboard/creations"
+            "Mis creaciones en Roblox",
+            "https://create.roblox.com/dashboard/creations",
+            use_container_width=True,
         )
 
+
 # =====================================================================
-# PESTAÑA 2: PUBLICAR JUEGO
+# PÁGINA: PUBLICAR JUEGO
 # =====================================================================
-with tab_juego:
-    st.subheader("Publicar un juego (.rbxl / .rbxlx)")
+def pagina_juego():
+    titulo_pagina(
+        "🎮",
+        "Publicar juego",
+        "Sube un archivo .rbxl / .rbxlx (máx. 100 MB) a un place que ya existe.",
+    )
     st.info(
         "Esto **reemplaza el contenido de un place que ya existe**. "
         "No crea juegos nuevos. Crea antes un place vacío en Roblox y copia sus IDs."
@@ -1010,24 +1303,32 @@ with tab_juego:
     else:
         st.caption("🔑 Usando la API Key general (ROBLOX_API_KEY). Puedes añadir ROBLOX_PLACE_API_KEY en los secrets.")
 
-    universe_id = st.text_input("Universe ID", value=UNIVERSE_ID_DEF, key="universe_id")
-    place_id = st.text_input("Place ID", value=PLACE_ID_DEF, key="place_id")
+    with st.container(border=True):
+        st.markdown("**1 · Datos del place**")
+        universe_id = st.text_input("Universe ID", value=UNIVERSE_ID_DEF, key="universe_id")
+        place_id = st.text_input("Place ID", value=PLACE_ID_DEF, key="place_id")
 
-    archivo_juego = st.file_uploader(
-        "Archivo del juego",
-        type=["rbxl", "rbxlx"],
-        accept_multiple_files=False,
-        key="uploader_juego",
-    )
+    with st.container(border=True):
+        st.markdown("**2 · Archivo del juego**")
+        archivo_juego = st.file_uploader(
+            "Archivo del juego",
+            type=["rbxl", "rbxlx"],
+            accept_multiple_files=False,
+            key="uploader_juego",
+            label_visibility="collapsed",
+        )
+        if archivo_juego:
+            st.caption(f"{archivo_juego.name} · {archivo_juego.size / (1024 * 1024):.1f} MB")
 
-    modo = st.radio(
-        "Modo",
-        ["Publicar (visible para todos)", "Guardar (sin publicar)"],
-        help="Guardar sube la versión pero no la hace pública. Podrás publicarla desde Studio.",
-    )
-    tipo_version = "Published" if modo.startswith("Publicar") else "Saved"
-
-    confirmar = st.checkbox("Entiendo que se reemplazará el contenido actual del place.")
+    with st.container(border=True):
+        st.markdown("**3 · Modo y confirmación**")
+        modo = st.radio(
+            "Modo",
+            ["Publicar (visible para todos)", "Guardar (sin publicar)"],
+            help="Guardar sube la versión pero no la hace pública. Podrás publicarla desde Studio.",
+        )
+        tipo_version = "Published" if modo.startswith("Publicar") else "Saved"
+        confirmar = st.checkbox("Entiendo que se reemplazará el contenido actual del place.")
 
     listo = bool(
         archivo_juego and universe_id.strip().isdigit() and place_id.strip().isdigit() and confirmar
@@ -1055,6 +1356,7 @@ with tab_juego:
                 st.link_button(
                     "Abrir en Roblox",
                     f"https://www.roblox.com/games/{place_id.strip()}",
+                    use_container_width=True,
                 )
             else:
                 st.error(f"❌ {detalle}")
@@ -1062,8 +1364,18 @@ with tab_juego:
     if not listo:
         st.caption("Completa los dos IDs (solo números), sube el archivo y marca la casilla.")
 
+
 # =====================================================================
-# PESTAÑA 3: CHAT IA
+# ARRANQUE
 # =====================================================================
-with tab_chat:
-    pestana_chat()
+iniciar_estado()
+barra_lateral()
+cerrar_menu_si_toca()
+
+_seccion = st.session_state["seccion"]
+if _seccion == SECCIONES[0]:
+    pagina_chat()
+elif _seccion == SECCIONES[1]:
+    pagina_assets()
+else:
+    pagina_juego()
