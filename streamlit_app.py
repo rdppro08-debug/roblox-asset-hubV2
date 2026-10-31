@@ -1,6 +1,8 @@
-# Roblox Asset Hub v7 (Streamlit) - interfaz estilo app de chat
+# Roblox Asset Hub v8 (Streamlit) - interfaz estilo app de chat
 #  - Menú lateral (☰): Chat IA con historial y búsqueda, Assets, Publicar juego
 #  - Chat IA (Gemini / Claude / ChatGPT): texto, audio, chats guardados y código copiable
+#  - NUEVO v8: más fluido, colores más suaves, tamaño de letra, botón ✏️ para editar mensajes,
+#              y el chat/sección se restauran al recargar o volver a abrir la página
 #  - Assets: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)  -> usa ROBLOX_API_KEY
 #  - Publicar juegos (.rbxl/.rbxlx) en un place existente      -> usa ROBLOX_PLACE_API_KEY
 #
@@ -55,16 +57,16 @@ GEMINI_API_KEY = secreto("GEMINI_API_KEY")
 ANTHROPIC_API_KEY = secreto("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = secreto("OPENAI_API_KEY")
 
-# ---------- Estilo global ----------
+# ---------- Estilo global (ligero y suave para la vista) ----------
 ESTILO_GLOBAL = """
 <style>
-/* Fondo con brillo azul abajo (funciona en tema oscuro y claro) */
+/* Brillo azul muy suave abajo (sin 'fixed': así no se repinta al desplazar) */
 .stApp {
-    background-image: radial-gradient(ellipse 130% 42% at 50% 110%, rgba(66,99,235,0.36), transparent 70%);
-    background-attachment: fixed;
+    background-image: radial-gradient(ellipse 130% 38% at 50% 112%, rgba(66,99,235,0.15), transparent 70%);
 }
+html, body { -webkit-font-smoothing: antialiased; text-rendering: optimizeSpeed; }
 header[data-testid="stHeader"] { background: transparent; }
-.block-container { max-width: 760px; padding-top: 3.2rem; padding-bottom: 7rem; }
+.block-container { max-width: 740px; padding-top: 3rem; padding-bottom: 7rem; }
 [data-testid="stBottom"], [data-testid="stBottom"] > div { background: transparent !important; }
 
 /* Columnas siempre en fila, también en el celular */
@@ -80,37 +82,37 @@ div[data-testid="stHorizontalBlock"] > div[data-testid="column"] { min-width: 0 
 }
 .stButton > button[kind="primary"], button[data-testid="stBaseButton-primary"],
 .stDownloadButton > button[kind="primary"] {
-    background: #3d6bf0; border-color: #3d6bf0; color: #fff;
+    background: #4a6fdc; border-color: #4a6fdc; color: #fff;
 }
 .stButton > button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover {
-    background: #5580ff; border-color: #5580ff; color: #fff;
+    background: #5c80ee; border-color: #5c80ee; color: #fff;
 }
 
 /* Campos, tarjetas y subida de archivos */
 [data-baseweb="input"], [data-baseweb="textarea"], [data-baseweb="select"] > div { border-radius: 14px !important; }
-[data-testid="stFileUploaderDropzone"] { border-radius: 20px; border: 1.5px dashed rgba(128,128,128,0.55); }
+[data-testid="stFileUploaderDropzone"] { border-radius: 20px; border: 1.5px dashed rgba(128,128,128,0.45); }
 [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 18px; }
 [data-testid="stExpander"] { border-radius: 16px; }
-[data-testid="stMetric"] { background: rgba(128,128,128,0.12); border-radius: 16px; padding: 0.6rem 0.9rem; }
+[data-testid="stMetric"] { background: rgba(128,128,128,0.10); border-radius: 16px; padding: 0.6rem 0.9rem; }
 
 /* Encabezados de página */
-.titulo-pagina { font-size: 1.7rem; font-weight: 600; margin: 0 0 0.15rem 0; }
-.sub-pagina { opacity: 0.65; font-size: 0.9rem; margin-bottom: 1rem; }
+.titulo-pagina { font-size: 1.6rem; font-weight: 600; margin: 0 0 0.15rem 0; }
+.sub-pagina { opacity: 0.6; font-size: 0.9rem; margin-bottom: 1rem; }
 
-/* Saludo central (como las apps de chat) */
-.saludo { text-align: center; margin: 15vh 0 1.4rem 0; }
+/* Saludo central */
+.saludo { text-align: center; margin: 14vh 0 1.4rem 0; }
 .saludo .estrella {
-    font-size: 3.3rem; line-height: 1;
-    background: conic-gradient(from 200deg, #ea4335, #fbbc04, #34a853, #4285f4, #ea4335);
+    font-size: 3rem; line-height: 1;
+    background: linear-gradient(135deg, #7c9cff, #a98bff 55%, #ff9ccf);
     -webkit-background-clip: text; background-clip: text;
     color: transparent; -webkit-text-fill-color: transparent;
 }
-.saludo .texto { font-size: 2.1rem; font-weight: 500; line-height: 1.25; margin-top: 0.7rem; }
+.saludo .texto { font-size: 1.9rem; font-weight: 500; line-height: 1.3; margin-top: 0.7rem; opacity: 0.92; }
 
 /* Menú lateral */
-section[data-testid="stSidebar"] { border-right: 1px solid rgba(128,128,128,0.18); }
-.marca-lateral { font-size: 1.25rem; font-weight: 600; margin: 0.2rem 0 0.6rem 0; }
-.grupo-chats { opacity: 0.55; font-size: 0.75rem; margin: 0.9rem 0 0.2rem 0.3rem; font-weight: 600; }
+section[data-testid="stSidebar"] { border-right: 1px solid rgba(128,128,128,0.15); }
+.marca-lateral { font-size: 1.2rem; font-weight: 600; margin: 0.2rem 0 0.6rem 0; }
+.grupo-chats { opacity: 0.5; font-size: 0.74rem; margin: 0.9rem 0 0.2rem 0.3rem; font-weight: 600; }
 section[data-testid="stSidebar"] .stButton > button {
     justify-content: flex-start; text-align: left; border: none; background: transparent;
     padding: 0.35rem 0.8rem; min-height: 2.3rem; box-shadow: none;
@@ -119,57 +121,74 @@ section[data-testid="stSidebar"] .stButton > button > div { justify-content: fle
 section[data-testid="stSidebar"] .stButton > button p {
     text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%;
 }
-section[data-testid="stSidebar"] .stButton > button:hover { background: rgba(128,128,128,0.16); }
+section[data-testid="stSidebar"] .stButton > button:hover { background: rgba(128,128,128,0.14); }
 section[data-testid="stSidebar"] .stButton > button[kind="primary"],
 section[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] {
-    background: rgba(79,140,255,0.25); color: inherit;
+    background: rgba(90,130,240,0.22); color: inherit;
 }
 
-/* Mensajes: tú en burbuja a la derecha, la IA sin burbuja */
+/* Mensajes: tú en burbuja suave a la derecha, la IA sin burbuja */
 div[data-testid="stChatMessage"] {
-    background: transparent; border: none; padding: 0.2rem 0; margin-bottom: 0.7rem;
+    background: transparent; border: none; padding: 0.2rem 0; margin-bottom: 0.6rem;
 }
 div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
 div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
     flex-direction: row-reverse;
-    background: rgba(128,128,128,0.22);
-    border-radius: 22px 22px 6px 22px;
-    padding: 0.65rem 1rem;
+    background: rgba(128,128,128,0.16);
+    border-radius: 20px 20px 6px 20px;
+    padding: 0.6rem 1rem;
     margin-left: auto;
     width: fit-content;
-    max-width: 86%;
+    max-width: 88%;
 }
+/* Al editar, la burbuja ocupa todo el ancho */
+div[data-testid="stChatMessage"]:has(textarea) { width: 100%; max-width: 100%; }
 div[data-testid="stChatMessageAvatarUser"], div[data-testid="chatAvatarIcon-user"] { display: none; }
 div[data-testid="stChatMessageAvatarAssistant"], div[data-testid="chatAvatarIcon-assistant"] {
     background: transparent;
 }
-div[data-testid="stChatMessage"] p { margin-bottom: 0.4rem; }
+div[data-testid="stChatMessage"] p { margin-bottom: 0.45rem; }
+
+/* Botón ✏️ para editar: pequeño, discreto y pegado a la burbuja */
+[class*="st-key-lapiz_"] { display: flex; justify-content: flex-end; margin-top: -0.9rem; margin-bottom: 0.5rem; }
+[class*="st-key-lapiz_"] button {
+    min-height: 1.7rem; padding: 0 0.6rem; border: none; background: transparent;
+    opacity: 0.5; font-size: 0.85rem;
+}
+[class*="st-key-lapiz_"] button:hover { opacity: 1; background: rgba(128,128,128,0.16); }
+
+/* Código: fondo suave y líneas largas con salto (no hace falta deslizar de lado) */
+[data-testid="stCode"] { border-radius: 14px; }
+[data-testid="stCode"] pre, [data-testid="stCode"] code {
+    white-space: pre-wrap !important; word-break: break-word; font-size: 0.82rem; line-height: 1.5;
+}
 
 /* Caja de mensaje redondeada */
 div[data-testid="stChatInput"] {
-    border-radius: 30px;
-    background: rgba(128,128,128,0.18);
-    border: 1px solid rgba(128,128,128,0.28);
+    border-radius: 28px;
+    background: rgba(128,128,128,0.14);
+    border: 1px solid rgba(128,128,128,0.24);
 }
 div[data-testid="stChatInput"] > div {
-    border-radius: 30px; border: none !important; background: transparent !important; box-shadow: none !important;
+    border-radius: 28px; border: none !important; background: transparent !important; box-shadow: none !important;
 }
-div[data-testid="stChatInput"]:focus-within { border-color: rgba(90,130,255,0.9); }
+div[data-testid="stChatInput"]:focus-within { border-color: rgba(100,140,240,0.8); }
 div[data-testid="stChatInput"] textarea { font-size: 1rem; }
 
 /* Indicador "escribiendo" */
 .escribiendo { display: inline-flex; gap: 5px; padding: 6px 2px; }
 .escribiendo span {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: rgba(160,160,160,0.9);
+    width: 7px; height: 7px; border-radius: 50%;
+    background: rgba(160,160,160,0.85);
     animation: salto 1.2s infinite ease-in-out;
 }
 .escribiendo span:nth-child(2) { animation-delay: 0.2s; }
 .escribiendo span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes salto {
     0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-    30% { transform: translateY(-6px); opacity: 1; }
+    30% { transform: translateY(-5px); opacity: 1; }
 }
+@media (prefers-reduced-motion: reduce) { .escribiendo span { animation: none; } }
 </style>
 """
 
@@ -350,7 +369,14 @@ PROVEEDORES = [p for p in MODELOS if CLAVES_IA[p]]
 # Nivel de razonamiento (solo Gemini). "Bajo" responde mucho más rápido.
 NIVELES = {"Automático": None, "Bajo": "low", "Medio": "medium", "Alto": "high"}
 
+# Tamaño de letra del chat (rem)
+TAMANOS = {"Pequeña": 0.94, "Normal": 1.02, "Grande": 1.15}
+
 MAX_MENSAJES_CONTEXTO = 30  # cuantos mensajes anteriores se envian a la IA
+MAX_VISIBLES = 30           # mensajes que se dibujan a la vez (más rápido); el resto con un botón
+MAX_CON_DESCARGA = 6        # solo los últimos mensajes llevan botón de descarga (menos widgets)
+MAX_CHATS_LATERAL = 30
+INTERVALO_STREAM = 0.07     # segundos entre actualizaciones mientras la IA escribe
 CHATS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chats_guardados.json")
 TITULO_NUEVO = "Chat nuevo"
 SECCIONES = ["💬 Chat IA", "📦 Assets", "🎮 Publicar juego"]
@@ -653,12 +679,14 @@ def limpiar_chats(obj):
     return limpios
 
 
-def cargar_chats():
+def cargar_datos():
+    """Devuelve (chats, id_del_chat_actual_guardado)."""
     try:
         with open(CHATS_ARCHIVO, "r", encoding="utf-8") as f:
-            return limpiar_chats(json.load(f).get("chats"))
+            datos = json.load(f)
+        return limpiar_chats(datos.get("chats")), str(datos.get("actual") or "")
     except Exception:
-        return {}
+        return {}, ""
 
 
 def _con_mensajes():
@@ -667,9 +695,12 @@ def _con_mensajes():
 
 def guardar_chats():
     try:
+        ss = st.session_state
+        con = _con_mensajes()
+        actual = ss.get("chat_actual")
         tmp = CHATS_ARCHIVO + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"chats": _con_mensajes()}, f, ensure_ascii=False)
+            json.dump({"chats": con, "actual": actual if actual in con else ""}, f, ensure_ascii=False)
         os.replace(tmp, CHATS_ARCHIVO)
     except Exception:
         pass  # si no se puede escribir en disco, el chat sigue funcionando en memoria
@@ -702,6 +733,7 @@ def nuevo_chat():
     actual = ss["chats"].get(ss.get("chat_actual"))
     if actual is None or actual["mensajes"]:
         _crear_chat()
+    ss["editando"] = None
     pedir_cerrar_menu()
 
 
@@ -710,7 +742,9 @@ def seleccionar_chat(cid):
     if cid in ss["chats"]:
         ss["chat_actual"] = cid
         _podar_vacios()
+        guardar_chats()  # recuerda cuál era el último chat abierto
     ss["buscar_chats"] = ""
+    ss["editando"] = None
     pedir_cerrar_menu()
 
 
@@ -719,6 +753,7 @@ def borrar_chat():
     ss["chats"].pop(ss.get("chat_actual"), None)
     ss["chat_actual"] = None
     ss["confirmar_borrado"] = False
+    ss["editando"] = None
     guardar_chats()
 
 
@@ -738,11 +773,42 @@ def elegir_sugerencia(texto):
 
 
 def regenerar_respuesta():
+    """Repite la última respuesta (o reintenta si el último mensaje quedó sin respuesta)."""
     chat = st.session_state["chats"].get(st.session_state.get("chat_actual"))
-    if chat and chat["mensajes"] and chat["mensajes"][-1]["role"] == "assistant":
-        chat["mensajes"].pop()
-        st.session_state["regenerar"] = True
-        guardar_chats()
+    if chat and chat["mensajes"]:
+        if chat["mensajes"][-1]["role"] == "assistant":
+            chat["mensajes"].pop()
+        if chat["mensajes"] and chat["mensajes"][-1]["role"] == "user":
+            st.session_state["regenerar"] = True
+            guardar_chats()
+
+
+def mostrar_anteriores():
+    st.session_state["ver_todo"] = st.session_state.get("chat_actual")
+
+
+# ----- Editar mensajes -----
+def iniciar_edicion(i):
+    st.session_state["editando"] = i
+
+
+def cancelar_edicion():
+    st.session_state["editando"] = None
+
+
+def guardar_edicion(i):
+    """Reemplaza el mensaje i, borra lo que venía después y vuelve a pedir la respuesta."""
+    ss = st.session_state
+    chat = ss["chats"].get(ss.get("chat_actual"))
+    nuevo = str(ss.get(f"edit_text_{i}", "")).strip()
+    ss["editando"] = None
+    if not chat or not nuevo or i >= len(chat["mensajes"]):
+        return
+    chat["mensajes"] = chat["mensajes"][:i]
+    if i == 0:
+        chat["titulo"] = TITULO_NUEVO
+    ss["prompt_pendiente"] = nuevo
+    guardar_chats()
 
 
 def importar_chats(contenido):
@@ -758,13 +824,29 @@ def importar_chats(contenido):
 def iniciar_estado():
     ss = st.session_state
     if "chats" not in ss:
-        ss["chats"] = cargar_chats()
-        ss["chat_actual"] = None
+        chats, guardado = cargar_datos()
+        ss["chats"] = chats
+        # Restaura el chat donde estabas: primero el de la URL, luego el último guardado, luego el más reciente
+        c_url = str(st.query_params.get("c", ""))
+        con = [k for k, v in chats.items() if v["mensajes"]]
+        if c_url in con:
+            ss["chat_actual"] = c_url
+        elif guardado in con:
+            ss["chat_actual"] = guardado
+        elif con:
+            ss["chat_actual"] = max(con, key=lambda k: chats[k]["actualizado"])
+        else:
+            ss["chat_actual"] = None
+        s_url = str(st.query_params.get("s", ""))
+        if s_url.isdigit() and int(s_url) < len(SECCIONES):
+            ss["seccion"] = SECCIONES[int(s_url)]
     ss.setdefault("seccion", SECCIONES[0])
     ss.setdefault("audio_n", 0)
     ss.setdefault("sistema", SISTEMA_DEF)
     ss.setdefault("razonamiento", "Bajo")
+    ss.setdefault("fuente", "Normal")
     ss.setdefault("buscar_chats", "")
+    ss.setdefault("editando", None)
     if PROVEEDORES and ss.get("proveedor") not in PROVEEDORES:
         ss["proveedor"] = PROVEEDORES[0]
     for p in MODELOS:
@@ -772,6 +854,33 @@ def iniciar_estado():
         ss.setdefault(f"modelo_custom_{p}", "")
     if ss.get("chat_actual") not in ss["chats"]:
         _crear_chat()
+
+
+def sincronizar_url():
+    """Guarda en la URL el chat y la sección abiertos, para que al recargar sigas donde estabas."""
+    ss = st.session_state
+    try:
+        qp = st.query_params
+        cid = ss.get("chat_actual")
+        if cid and ss["chats"].get(cid, {}).get("mensajes"):
+            if qp.get("c") != cid:
+                qp["c"] = cid
+        elif "c" in qp:
+            del qp["c"]
+        s = str(SECCIONES.index(ss["seccion"]))
+        if qp.get("s") != s:
+            qp["s"] = s
+    except Exception:
+        pass
+
+
+def estilo_fuente():
+    tam = TAMANOS.get(st.session_state.get("fuente"), TAMANOS["Normal"])
+    st.markdown(
+        "<style>div[data-testid='stChatMessage'] p, div[data-testid='stChatMessage'] li "
+        f"{{ font-size: {tam}rem; line-height: 1.65; }}</style>",
+        unsafe_allow_html=True,
+    )
 
 
 def modelo_actual(proveedor):
@@ -831,7 +940,7 @@ def nombre_descarga(trozos, i, n_codigo):
     return f"codigo_{n_codigo}{ext}"
 
 
-def mostrar_mensaje(texto, clave):
+def mostrar_mensaje(texto, clave, con_descarga=True):
     trozos = partir_mensaje(texto)
     n_codigo = 0
     for i, tz in enumerate(trozos):
@@ -842,13 +951,14 @@ def mostrar_mensaje(texto, clave):
             n_codigo += 1
             leng = "lua" if tz["lenguaje"] == "luau" else (tz["lenguaje"] or None)
             st.code(tz["texto"], language=leng)  # el icono de copiar viene incluido
-            st.download_button(
-                "⬇️ Descargar archivo",
-                data=tz["texto"].encode("utf-8"),
-                file_name=nombre_descarga(trozos, i, n_codigo),
-                mime="text/plain",
-                key=f"dl_{clave}_{n_codigo}",
-            )
+            if con_descarga:
+                st.download_button(
+                    "⬇️ Descargar archivo",
+                    data=tz["texto"].encode("utf-8"),
+                    file_name=nombre_descarga(trozos, i, n_codigo),
+                    mime="text/plain",
+                    key=f"dl_{clave}_{n_codigo}",
+                )
 
 
 def _campo(valor, nombre):
@@ -895,7 +1005,7 @@ def lista_chats_lateral():
     ]
     visibles.sort(key=lambda k: chats[k]["actualizado"], reverse=True)
     if not qn:
-        visibles = visibles[:40]
+        visibles = visibles[:MAX_CHATS_LATERAL]
 
     if not visibles:
         st.caption("Aún no hay chats guardados." if not qn else "Sin resultados.")
@@ -918,6 +1028,7 @@ def lista_chats_lateral():
 
     chat = chats[ss["chat_actual"]]
     with st.expander("⚙️ Ajustes del chat"):
+        st.select_slider("Tamaño de letra", options=list(TAMANOS), key="fuente")
         st.text_area(
             "Instrucciones para la IA",
             key="sistema",
@@ -952,8 +1063,9 @@ def lista_chats_lateral():
             n = importar_chats(subido.getvalue())
             st.success(f"Se importaron {n} chats." if n else "El archivo no tiene chats válidos.")
         st.caption(
-            "Los chats se guardan en el servidor de la app. Si la app se reinicia o se vuelve a "
-            "desplegar pueden perderse: usa **Exportar** de vez en cuando para tener respaldo."
+            "Los chats se guardan en el servidor de la app y se restauran al recargar. Si la app se "
+            "reinicia o se vuelve a desplegar pueden perderse: usa **Exportar** de vez en cuando "
+            "para tener respaldo."
         )
 
 
@@ -1100,21 +1212,73 @@ def pagina_chat():
                         use_container_width=True,
                     )
 
-        for i, m in enumerate(mensajes):
-            with st.chat_message(m["role"], avatar="✨" if m["role"] == "assistant" else None):
-                if m["role"] == "assistant":
-                    mostrar_mensaje(m["text"], f"{elegido}_{i}")
-                else:
-                    st.markdown(m["text"])
+        # Solo se dibujan los últimos mensajes (más fluido); el resto se muestra con un botón
+        inicio = 0
+        if len(mensajes) > MAX_VISIBLES and ss.get("ver_todo") != elegido:
+            inicio = len(mensajes) - MAX_VISIBLES
+            st.button(
+                f"⬆️ Ver {inicio} mensajes anteriores",
+                on_click=mostrar_anteriores,
+                key="btn_anteriores",
+                use_container_width=True,
+            )
 
-        if mensajes and mensajes[-1]["role"] == "assistant" and not prompt and not regenerar:
-            st.button("🔁 Regenerar", on_click=regenerar_respuesta, key="btn_regenerar")
+        for i in range(inicio, len(mensajes)):
+            m = mensajes[i]
+            if m["role"] == "assistant":
+                with st.chat_message("assistant", avatar="✨"):
+                    mostrar_mensaje(
+                        m["text"], f"{elegido}_{i}", con_descarga=i >= len(mensajes) - MAX_CON_DESCARGA
+                    )
+            elif ss.get("editando") == i:
+                with st.chat_message("user"):
+                    st.text_area(
+                        "Editar mensaje",
+                        value=m["text"],
+                        key=f"edit_text_{i}",
+                        height=150,
+                        label_visibility="collapsed",
+                    )
+                    b1, b2 = st.columns(2)
+                    b1.button(
+                        "✅ Enviar",
+                        key=f"edit_ok_{i}",
+                        on_click=guardar_edicion,
+                        args=(i,),
+                        type="primary",
+                        use_container_width=True,
+                    )
+                    b2.button(
+                        "Cancelar",
+                        key=f"edit_no_{i}",
+                        on_click=cancelar_edicion,
+                        use_container_width=True,
+                    )
+                st.caption("Al enviar, se borra lo que venía después de este mensaje y la IA responde de nuevo.")
+            else:
+                with st.chat_message("user"):
+                    st.markdown(m["text"])
+                st.button(
+                    "✏️",
+                    key=f"lapiz_{i}",
+                    on_click=iniciar_edicion,
+                    args=(i,),
+                    help="Editar mensaje",
+                )
+
+        if mensajes and not prompt and not regenerar:
+            if mensajes[-1]["role"] == "assistant":
+                st.button("🔁 Regenerar", on_click=regenerar_respuesta, key="btn_regenerar")
+            else:
+                st.button("🔁 Reintentar respuesta", on_click=regenerar_respuesta, key="btn_reintentar")
 
         generar_resp = False
         if prompt:
             mensajes.append({"role": "user", "text": prompt})
             if chat["titulo"] == TITULO_NUEVO:
                 chat["titulo"] = " ".join(prompt.split())[:40] or TITULO_NUEVO
+            chat["actualizado"] = time.time()
+            guardar_chats()  # el mensaje queda guardado aunque cierres la app a mitad de respuesta
             with st.chat_message("user"):
                 st.markdown(prompt)
             generar_resp = True
@@ -1122,36 +1286,41 @@ def pagina_chat():
             generar_resp = True
 
         if generar_resp:
+            completo = False
+            hubo_error = False
+            texto_final = ""
             with st.chat_message("assistant", avatar="✨"):
-                estado = st.empty()
-                estado.markdown(PUNTOS_ESCRIBIENDO, unsafe_allow_html=True)
-
-                def trozos():
-                    primero = True
-                    for t in generar(proveedor, modelo, mensajes, ss["sistema"], nivel):
-                        if primero:
-                            estado.empty()
-                            primero = False
-                        yield t
-
+                ph = st.empty()
+                ph.markdown(PUNTOS_ESCRIBIENDO, unsafe_allow_html=True)
+                buf = []
                 try:
-                    respuesta = st.write_stream(trozos())
+                    ultimo = 0.0
+                    for t in generar(proveedor, modelo, mensajes, ss["sistema"], nivel):
+                        buf.append(t)
+                        ahora = time.time()
+                        if ahora - ultimo >= INTERVALO_STREAM:  # actualiza poco: más fluido
+                            ph.markdown("".join(buf) + " ▌")
+                            ultimo = ahora
+                    completo = True
                 except Exception as err:
-                    estado.empty()
+                    hubo_error = True
+                    ph.empty()
                     st.error(f"❌ {err}")
-                    respuesta = None
-            if respuesta and str(respuesta).strip():
-                mensajes.append({"role": "assistant", "text": str(respuesta)})
-                chat["actualizado"] = time.time()
-                guardar_chats()
+                finally:
+                    # Guarda lo que alcanzó a llegar aunque se corte la conexión o cierres la app
+                    texto_final = "".join(buf).strip()
+                    if texto_final:
+                        if not completo:
+                            texto_final += "\n\n*⚠️ Respuesta interrumpida.*"
+                        mensajes.append({"role": "assistant", "text": texto_final})
+                        chat["actualizado"] = time.time()
+                    guardar_chats()
+                if hubo_error:
+                    st.button("🔁 Reintentar", on_click=regenerar_respuesta, key="btn_reintentar_err")
+            if completo and texto_final:
                 if desde_audio:
                     ss["audio_n"] += 1  # limpia la grabación para la próxima
-                st.rerun()  # vuelve a dibujar con botones de copiar y descargar
-            elif prompt:
-                mensajes.pop()  # no deja un mensaje sin respuesta; vuelve a enviarlo
-                if not mensajes:
-                    chat["titulo"] = TITULO_NUEVO
-                st.caption("Tu mensaje no se guardó porque no hubo respuesta. Vuelve a enviarlo.")
+                st.rerun()  # vuelve a dibujar con botones de copiar, descargar, editar y regenerar
 
 
 # =====================================================================
@@ -1371,6 +1540,8 @@ def pagina_juego():
 iniciar_estado()
 barra_lateral()
 cerrar_menu_si_toca()
+estilo_fuente()
+sincronizar_url()
 
 _seccion = st.session_state["seccion"]
 if _seccion == SECCIONES[0]:
