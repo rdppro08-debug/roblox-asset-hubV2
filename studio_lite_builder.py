@@ -37,14 +37,14 @@ class _Constructor:
 
     def item(self, clase, nombre, fuente=None, hijos=None):
         ref = f"RBX{next(self.n):05d}"
-        self.partes.append(f'<Item class="{clase}" referent="{ref}"><Properties>')
+        self.partes.append(f'\n<Item class="{clase}" referent="{ref}">\n<Properties>')
         self.partes.append(f'<string name="Name">{_esc(nombre)}</string>')
         if fuente is not None:
             self.partes.append(f'<ProtectedString name="Source">{_cdata(fuente)}</ProtectedString>')
         self.partes.append("</Properties>")
         if hijos:
             hijos()
-        self.partes.append("</Item>")
+        self.partes.append("</Item>\n")
 
 
 def cargar_fuentes():
@@ -78,13 +78,14 @@ def construir_rbxlx():
             incluidos.append(f"StarterPlayer/StarterPlayerScripts/StudioLiteClient/{nombre}")
 
     b.partes.append(
-        '<?xml version="1.0" encoding="utf-8"?>'
         '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" '
         'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
         'xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">'
         '<Meta name="ExplicitAutoJoints">true</Meta>'
     )
     b.item("Workspace", "Workspace")
+    b.item("Players", "Players")
+    b.item("Lighting", "Lighting")
     b.item(
         "ReplicatedStorage",
         "ReplicatedStorage",
@@ -104,6 +105,11 @@ def construir_rbxlx():
             hijos=lambda: b.item("Folder", "StudioLiteClient", hijos=cliente),
         ),
     )
+    b.item("StarterGui", "StarterGui")
+    b.item("StarterPack", "StarterPack")
+    b.item("ServerStorage", "ServerStorage")
+    b.item("SoundService", "SoundService")
+    b.item("Teams", "Teams")
     b.partes.append("</roblox>")
     return "".join(b.partes).encode("utf-8"), incluidos
 
