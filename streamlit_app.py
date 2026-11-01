@@ -2829,6 +2829,1521 @@ def pagina_juego():
 
     if st.button(
         "🎮 Subir juego",
+# Roblox Asset Hub v8 (Streamlit) - interfaz estilo app de chat
+#  - Menú lateral (☰): Chat IA con historial y búsqueda, Assets, Publicar juego, Instalar Studio Lite
+#  - Chat IA (Gemini / Claude / ChatGPT): texto, audio, chats guardados y código copiable
+#  - NUEVO v8: más fluido, colores más suaves, tamaño de letra, botón ✏️ para editar mensajes,
+#              y el chat/sección se restauran al recargar o volver a abrir la página
+#  - Assets: modelos (.fbx/.gltf/.glb) y animaciones (.rbxm)  -> usa ROBLOX_API_KEY
+#  - Publicar juegos (.rbxl/.rbxlx) en un place existente      -> usa ROBLOX_PLACE_API_KEY
+#  - Instalar Studio Lite: arma un .rbxlx con los scripts y lo sube (studio_lite_builder.py
+#                          + studio_lite_scripts.json, en la misma carpeta que esta app)
+#
+# Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
+# Secrets opcionales:
+#   ROBLOX_PLACE_API_KEY  (API Key aparte para publicar juegos; si falta, usa ROBLOX_API_KEY)
+#   UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
+#   GEMINI_API_KEY        (chat con Gemini; gratis en https://aistudio.google.com/apikey)
+#   ANTHROPIC_API_KEY     (chat con Claude; https://console.anthropic.com)
+#   OPENAI_API_KEY        (chat con ChatGPT; https://platform.openai.com/api-keys)
+#   GEMINI_MODEL / ANTHROPIC_MODEL / OPENAI_MODEL  (modelo por defecto de cada uno)
+# Basta con tener UNA de las tres claves de IA; el selector solo muestra las que existan.
+
+import base64
+import datetime
+import hmac
+import html
+import inspect
+import json
+import os
+import re
+import time
+
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+
+try:
+    import studio_lite_builder
+except Exception as _e_sl:
+    studio_lite_builder = None
+    _ERROR_STUDIO_LITE = str(_e_sl)
+
+st.set_page_config(
+    page_title="Roblox Asset Hub",
+    page_icon="📦",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
+
+
+def secreto(nombre):
+    try:
+        return str(st.secrets[nombre]).strip()
+    except Exception:
+        return ""
+
+
+API_KEY = secreto("ROBLOX_API_KEY")
+PLACE_API_KEY = secreto("ROBLOX_PLACE_API_KEY") or API_KEY
+USA_KEY_SEPARADA = bool(secreto("ROBLOX_PLACE_API_KEY"))
+USER_ID = secreto("ROBLOX_USER_ID")
+APP_USER = secreto("APP_USER")
+APP_PASS = secreto("APP_PASS")
+UNIVERSE_ID_DEF = secreto("UNIVERSE_ID")
+PLACE_ID_DEF = secreto("PLACE_ID")
+GEMINI_API_KEY = secreto("GEMINI_API_KEY")
+ANTHROPIC_API_KEY = secreto("ANTHROPIC_API_KEY")
+OPENAI_API_KEY = secreto("OPENAI_API_KEY")
+
+# ---------- Estilo global (ligero y suave para la vista) ----------
+ESTILO_GLOBAL = """
+<style>
+/* Brillo azul muy suave abajo (sin 'fixed': así no se repinta al desplazar) */
+.stApp {
+    background-image: radial-gradient(ellipse 130% 38% at 50% 112%, rgba(66,99,235,0.15), transparent 70%);
+}
+html, body { -webkit-font-smoothing: antialiased; text-rendering: optimizeSpeed; }
+header[data-testid="stHeader"] { background: transparent; }
+.block-container { max-width: 740px; padding-top: 3rem; padding-bottom: 7rem; }
+[data-testid="stBottom"], [data-testid="stBottom"] > div { background: transparent !important; }
+
+/* Columnas siempre en fila, también en el celular */
+div[data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.5rem; }
+div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+div[data-testid="stHorizontalBlock"] > div[data-testid="column"] { min-width: 0 !important; }
+
+/* Botones en forma de píldora */
+.stButton > button, .stDownloadButton > button,
+[data-testid="stLinkButton"] a, a[data-testid="stBaseLinkButton-secondary"],
+[data-testid="stPopover"] > button, [data-testid="stPopover"] button {
+    border-radius: 999px !important;
+}
+.stButton > button[kind="primary"], button[data-testid="stBaseButton-primary"],
+.stDownloadButton > button[kind="primary"] {
+    background: #4a6fdc; border-color: #4a6fdc; color: #fff;
+}
+.stButton > button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover {
+    background: #5c80ee; border-color: #5c80ee; color: #fff;
+}
+
+/* Campos, tarjetas y subida de archivos */
+[data-baseweb="input"], [data-baseweb="textarea"], [data-baseweb="select"] > div { border-radius: 14px !important; }
+[data-testid="stFileUploaderDropzone"] { border-radius: 20px; border: 1.5px dashed rgba(128,128,128,0.45); }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 18px; }
+[data-testid="stExpander"] { border-radius: 16px; }
+[data-testid="stMetric"] { background: rgba(128,128,128,0.10); border-radius: 16px; padding: 0.6rem 0.9rem; }
+
+/* Encabezados de página */
+.titulo-pagina { font-size: 1.6rem; font-weight: 600; margin: 0 0 0.15rem 0; }
+.sub-pagina { opacity: 0.6; font-size: 0.9rem; margin-bottom: 1rem; }
+
+/* Saludo central */
+.saludo { text-align: center; margin: 14vh 0 1.4rem 0; }
+.saludo .estrella {
+    font-size: 3rem; line-height: 1;
+    background: linear-gradient(135deg, #7c9cff, #a98bff 55%, #ff9ccf);
+    -webkit-background-clip: text; background-clip: text;
+    color: transparent; -webkit-text-fill-color: transparent;
+}
+.saludo .texto { font-size: 1.9rem; font-weight: 500; line-height: 1.3; margin-top: 0.7rem; opacity: 0.92; }
+
+/* Menú lateral */
+section[data-testid="stSidebar"] { border-right: 1px solid rgba(128,128,128,0.15); }
+.marca-lateral { font-size: 1.2rem; font-weight: 600; margin: 0.2rem 0 0.6rem 0; }
+.grupo-chats { opacity: 0.5; font-size: 0.74rem; margin: 0.9rem 0 0.2rem 0.3rem; font-weight: 600; }
+section[data-testid="stSidebar"] .stButton > button {
+    justify-content: flex-start; text-align: left; border: none; background: transparent;
+    padding: 0.35rem 0.8rem; min-height: 2.3rem; box-shadow: none;
+}
+section[data-testid="stSidebar"] .stButton > button > div { justify-content: flex-start; width: 100%; }
+section[data-testid="stSidebar"] .stButton > button p {
+    text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%;
+}
+section[data-testid="stSidebar"] .stButton > button:hover { background: rgba(128,128,128,0.14); }
+section[data-testid="stSidebar"] .stButton > button[kind="primary"],
+section[data-testid="stSidebar"] button[data-testid="stBaseButton-primary"] {
+    background: rgba(90,130,240,0.22); color: inherit;
+}
+
+/* Mensajes: tú en burbuja suave a la derecha, la IA sin burbuja */
+div[data-testid="stChatMessage"] {
+    background: transparent; border: none; padding: 0.2rem 0; margin-bottom: 0.6rem;
+}
+div[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
+div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
+    flex-direction: row-reverse;
+    background: rgba(128,128,128,0.16);
+    border-radius: 20px 20px 6px 20px;
+    padding: 0.6rem 1rem;
+    margin-left: auto;
+    width: fit-content;
+    max-width: 88%;
+}
+/* Al editar, la burbuja ocupa todo el ancho */
+div[data-testid="stChatMessage"]:has(textarea) { width: 100%; max-width: 100%; }
+div[data-testid="stChatMessageAvatarUser"], div[data-testid="chatAvatarIcon-user"] { display: none; }
+div[data-testid="stChatMessageAvatarAssistant"], div[data-testid="chatAvatarIcon-assistant"] {
+    background: transparent;
+}
+div[data-testid="stChatMessage"] p { margin-bottom: 0.45rem; }
+
+/* Botón ✏️ para editar: pequeño, discreto y pegado a la burbuja */
+[class*="st-key-lapiz_"] { display: flex; justify-content: flex-end; margin-top: -0.9rem; margin-bottom: 0.5rem; }
+[class*="st-key-lapiz_"] button {
+    min-height: 1.7rem; padding: 0 0.6rem; border: none; background: transparent;
+    opacity: 0.5; font-size: 0.85rem;
+}
+[class*="st-key-lapiz_"] button:hover { opacity: 1; background: rgba(128,128,128,0.16); }
+
+/* Código: fondo suave y líneas largas con salto (no hace falta deslizar de lado) */
+[data-testid="stCode"] { border-radius: 14px; }
+[data-testid="stCode"] pre, [data-testid="stCode"] code {
+    white-space: pre-wrap !important; word-break: break-word; font-size: 0.82rem; line-height: 1.5;
+}
+
+/* Caja de mensaje redondeada */
+div[data-testid="stChatInput"] {
+    border-radius: 28px;
+    background: rgba(128,128,128,0.14);
+    border: 1px solid rgba(128,128,128,0.24);
+}
+div[data-testid="stChatInput"] > div {
+    border-radius: 28px; border: none !important; background: transparent !important; box-shadow: none !important;
+}
+div[data-testid="stChatInput"]:focus-within { border-color: rgba(100,140,240,0.8); }
+div[data-testid="stChatInput"] textarea { font-size: 1rem; }
+
+/* Indicador "escribiendo" */
+.escribiendo { display: inline-flex; gap: 5px; padding: 6px 2px; }
+.escribiendo span {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: rgba(160,160,160,0.85);
+    animation: salto 1.2s infinite ease-in-out;
+}
+.escribiendo span:nth-child(2) { animation-delay: 0.2s; }
+.escribiendo span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes salto {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-5px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .escribiendo span { animation: none; } }
+</style>
+"""
+
+if not (API_KEY and USER_ID.isdigit() and APP_USER and APP_PASS):
+    st.error("Faltan secrets: ROBLOX_API_KEY, ROBLOX_USER_ID (numerico), APP_USER, APP_PASS.")
+    st.stop()
+
+st.markdown(ESTILO_GLOBAL, unsafe_allow_html=True)
+
+# ---------- Login (con sesion recordada por 30 dias) ----------
+DURACION_SESION = 30 * 24 * 3600  # 30 dias
+
+
+def _firma(exp):
+    clave = (APP_PASS + API_KEY).encode("utf-8")
+    return hmac.new(clave, f"{APP_USER}|{exp}".encode("utf-8"), "sha256").hexdigest()
+
+
+def crear_token():
+    exp = int(time.time()) + DURACION_SESION
+    return f"{exp}.{_firma(exp)}"
+
+
+def token_valido(token):
+    try:
+        exp_txt, firma = token.split(".", 1)
+        exp = int(exp_txt)
+    except Exception:
+        return False
+    return exp > time.time() and hmac.compare_digest(
+        firma.encode("utf-8"), _firma(exp).encode("utf-8")
+    )
+
+
+def credenciales_ok(u, p):
+    return hmac.compare_digest(u.encode("utf-8"), APP_USER.encode("utf-8")) and hmac.compare_digest(
+        p.encode("utf-8"), APP_PASS.encode("utf-8")
+    )
+
+
+# Si la URL trae un token valido, entra directo sin pedir usuario y contraseña
+if not st.session_state.get("autenticado"):
+    t = st.query_params.get("t", "")
+    if t and token_valido(t):
+        st.session_state["autenticado"] = True
+
+if not st.session_state.get("autenticado"):
+    st.markdown(
+        '<div class="saludo" style="margin-top:6vh"><div class="estrella">✦</div>'
+        '<div class="texto">Roblox Asset Hub</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Inicia sesión para continuar.")
+    u = st.text_input("Usuario", key="login_u")
+    mostrar = st.checkbox("Mostrar contraseña", value=False)
+    p = st.text_input(
+        "Contraseña",
+        type="default" if mostrar else "password",
+        key="login_p",
+    )
+    if st.button("Entrar", type="primary", use_container_width=True):
+        if credenciales_ok(u, p):
+            st.session_state["autenticado"] = True
+            st.query_params["t"] = crear_token()
+            st.rerun()
+        else:
+            st.error("Usuario o contraseña incorrectos.")
+    st.stop()
+
+# ---------- Subida de assets a Roblox ----------
+URL = "https://apis.roblox.com/assets/v1/assets"
+CABECERAS = {"x-api-key": API_KEY}
+MAX_BYTES = 20 * 1024 * 1024
+MAX_BYTES_PLACE = 100 * 1024 * 1024
+
+FORMATOS = {
+    ".fbx": ("Model", "model/fbx"),
+    ".gltf": ("Model", "model/gltf+json"),
+    ".glb": ("Model", "model/gltf-binary"),
+    ".rbxm": ("Animation", "model/x-rbxm"),
+}
+
+
+def subir_archivo(nombre_archivo, contenido, tipo_asset, mime, nombre, descripcion):
+    solicitud = {
+        "assetType": tipo_asset,
+        "displayName": nombre,
+        "description": descripcion,
+        "creationContext": {"creator": {"userId": int(USER_ID)}},
+    }
+    try:
+        r = requests.post(
+            URL,
+            headers=CABECERAS,
+            data={"request": json.dumps(solicitud)},
+            files={"fileContent": (nombre_archivo, contenido, mime)},
+            timeout=180,
+        )
+        if not r.ok:
+            return False, "", f"HTTP {r.status_code}: {r.text[:300]}"
+
+        ruta = r.json().get("path", "")
+        if not ruta.startswith("operations/"):
+            return False, "", "No se recibio la operacion esperada."
+
+        url_estado = "https://apis.roblox.com/assets/v1/" + ruta
+        inicio = time.time()
+        while time.time() - inicio < 240:
+            e = requests.get(url_estado, headers=CABECERAS, timeout=30)
+            if not e.ok:
+                return False, "", f"Error consultando estado: HTTP {e.status_code}"
+            res = e.json()
+            if res.get("done"):
+                if res.get("error"):
+                    return False, "", "Roblox no pudo procesarlo: " + json.dumps(
+                        res["error"], ensure_ascii=False
+                    )
+                asset = res.get("response", {})
+                asset_id = asset.get("assetId")
+                if not asset_id:
+                    return False, "", "Termino sin Asset ID."
+                mod = asset.get("moderationResult", {}).get("moderationState", "No informado")
+                return True, str(asset_id), f"moderacion: {mod}"
+            time.sleep(5)
+        return False, "", f"Tiempo agotado. Operacion: {ruta}"
+    except requests.exceptions.RequestException as err:
+        return False, "", "Error de conexion: " + str(err)
+
+
+# ---------- Publicar juego (place) ----------
+def publicar_place(universe_id, place_id, contenido, ext, tipo_version):
+    url = f"https://apis.roblox.com/universes/v1/{universe_id}/places/{place_id}/versions"
+    tipo_contenido = "application/xml" if ext == ".rbxlx" else "application/octet-stream"
+    try:
+        r = requests.post(
+            url,
+            headers={"x-api-key": PLACE_API_KEY, "Content-Type": tipo_contenido},
+            params={"versionType": tipo_version},
+            data=contenido,
+            timeout=300,
+        )
+        if not r.ok:
+            pistas = {
+                401: "API Key invalida o sin permiso universe-places:write.",
+                403: "La API Key no tiene acceso a este universo o la IP esta restringida.",
+                404: "Universe ID o Place ID incorrecto.",
+                409: "Conflicto: el place esta ocupado, intenta de nuevo.",
+                429: "Demasiadas solicitudes, espera un momento.",
+            }
+            pista = pistas.get(r.status_code, "")
+            return False, f"HTTP {r.status_code}. {pista} {r.text[:300]}".strip()
+        version = r.json().get("versionNumber", "?")
+        return True, str(version)
+    except requests.exceptions.RequestException as err:
+        return False, "Error de conexion: " + str(err)
+
+
+# ---------- Chat con IA (Gemini / Claude / ChatGPT) ----------
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+
+MODELOS = {
+    "Gemini": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"],
+    "Claude": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
+    "ChatGPT": ["gpt-4o", "gpt-4o-mini"],
+}
+CLAVES_IA = {"Gemini": GEMINI_API_KEY, "Claude": ANTHROPIC_API_KEY, "ChatGPT": OPENAI_API_KEY}
+MODELO_SECRET = {"Gemini": "GEMINI_MODEL", "Claude": "ANTHROPIC_MODEL", "ChatGPT": "OPENAI_MODEL"}
+MODELO_DEF = {}
+for _p in MODELOS:
+    _m = secreto(MODELO_SECRET[_p]) or MODELOS[_p][0]
+    if _m not in MODELOS[_p]:
+        MODELOS[_p].insert(0, _m)
+    MODELO_DEF[_p] = _m
+PROVEEDORES = [p for p in MODELOS if CLAVES_IA[p]]
+
+# Nivel de razonamiento (solo Gemini). "Bajo" responde mucho más rápido.
+NIVELES = {"Automático": None, "Bajo": "low", "Medio": "medium", "Alto": "high"}
+
+# Tamaño de letra del chat (rem)
+TAMANOS = {"Pequeña": 0.94, "Normal": 1.02, "Grande": 1.15}
+
+MAX_MENSAJES_CONTEXTO = 30  # cuantos mensajes anteriores se envian a la IA
+MAX_VISIBLES = 30           # mensajes que se dibujan a la vez (más rápido); el resto con un botón
+MAX_CON_DESCARGA = 6        # solo los últimos mensajes llevan botón de descarga (menos widgets)
+MAX_CHATS_LATERAL = 30
+INTERVALO_STREAM = 0.07     # segundos entre actualizaciones mientras la IA escribe
+CHATS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chats_guardados.json")
+TITULO_NUEVO = "Chat nuevo"
+SECCIONES = ["💬 Chat IA", "📦 Assets", "🎮 Publicar juego", "🧩 Instalar Studio Lite"]
+
+try:
+    ENTRADA_AUDIO = "accept_audio" in inspect.signature(st.chat_input).parameters
+except Exception:
+    ENTRADA_AUDIO = False
+
+SISTEMA_DEF = (
+    "Eres un asistente experto en programación, especialmente en Roblox Studio y Luau "
+    "(ServerScript, LocalScript, ModuleScript, RemoteEvents, personajes R6, DataStore y Open Cloud). "
+    "Responde siempre en español, de forma clara y directa; el usuario trabaja desde el celular.\n"
+    "Cuando pidan código: entrega el script COMPLETO, un bloque de código por cada script. "
+    "Antes de cada bloque escribe en una línea el nombre exacto del archivo y su ruta dentro de Roblox "
+    "(por ejemplo: `ServerScriptService/CombatServer` (Script)). "
+    "Nunca uses fragmentos, ni instrucciones de buscar y reemplazar, ni puntos suspensivos que omitan código. "
+    "Si falta información importante, haz una sola pregunta corta o asume lo más razonable y dilo."
+)
+
+SUGERENCIAS = [
+    ("🛒 Tienda con DataStore", "Hazme un sistema de tienda completo con monedas guardadas en DataStore."),
+    ("⚔️ Sistema de combate", "Hazme un sistema de combate para personajes R6 con golpes y daño."),
+    ("🌀 Portal entre mapas", "Hazme un portal que teletransporte al jugador a otro lugar del mapa."),
+    ("🐞 Arreglar un error", "Voy a pegarte un script con un error para que me ayudes a arreglarlo."),
+]
+
+PATRON_CODIGO = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
+PATRON_ARCHIVO = re.compile(r"[\w\-]+(?:\.[\w\-]+)*\.(?:lua|luau|py|json|txt|js|html|md|toml)")
+EXTENSIONES = {
+    "lua": ".lua",
+    "luau": ".lua",
+    "python": ".py",
+    "py": ".py",
+    "json": ".json",
+    "javascript": ".js",
+    "js": ".js",
+    "html": ".html",
+    "toml": ".toml",
+    "markdown": ".md",
+}
+
+PUNTOS_ESCRIBIENDO = '<div class="escribiendo"><span></span><span></span><span></span></div>'
+
+
+def _contexto(mensajes):
+    """Últimos mensajes; siempre empieza con uno del usuario (Claude lo exige)."""
+    ctx = list(mensajes[-MAX_MENSAJES_CONTEXTO:])
+    while ctx and ctx[0]["role"] != "user":
+        ctx.pop(0)
+    return ctx
+
+
+def _error_api(nombre, r, pistas):
+    try:
+        detalle = r.json()["error"]["message"]
+    except Exception:
+        detalle = r.text[:300]
+    return f"{nombre}: HTTP {r.status_code}. {pistas.get(r.status_code, '')} {detalle}".strip()
+
+
+PISTAS_GEMINI = {
+    400: "Solicitud inválida o API Key incorrecta.",
+    403: "La API Key no tiene permiso o no es válida.",
+    404: "Ese modelo no existe o no está disponible; prueba otro en la lista.",
+    429: "Alcanzaste el límite gratuito; espera un momento o usa otro modelo.",
+    500: "Error del servidor de Gemini; intenta de nuevo.",
+    503: "Gemini está saturado; intenta de nuevo en un momento.",
+}
+PISTAS_CLAUDE = {
+    401: "API Key de Anthropic inválida.",
+    403: "La API Key no tiene permiso.",
+    404: "Ese modelo no existe; escribe otro en 'Modelo personalizado'.",
+    429: "Demasiadas solicitudes o sin saldo; espera o revisa tu cuenta.",
+    529: "Claude está saturado; intenta de nuevo en un momento.",
+}
+PISTAS_OPENAI = {
+    401: "API Key de OpenAI inválida.",
+    404: "Ese modelo no existe o no tienes acceso; escribe otro en 'Modelo personalizado'.",
+    429: "Demasiadas solicitudes o sin saldo; espera o revisa tu cuenta.",
+    500: "Error del servidor de OpenAI; intenta de nuevo.",
+}
+
+
+def _eventos_sse(r):
+    """Devuelve cada evento JSON de una respuesta en streaming (SSE)."""
+    r.encoding = "utf-8"
+    try:
+        for linea in r.iter_lines(decode_unicode=True):
+            if not linea or not linea.startswith("data:"):
+                continue
+            dato = linea[5:].strip()
+            if not dato or dato == "[DONE]":
+                continue
+            try:
+                yield json.loads(dato)
+            except ValueError:
+                continue
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError(
+            "La IA tardó demasiado o se cortó la conexión. Prueba con razonamiento "
+            f"'Bajo' u otro modelo. ({type(err).__name__})"
+        )
+
+
+# ----- Gemini -----
+def _cabeceras_gemini():
+    return {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+
+
+def _post_gemini(metodo, modelo, cuerpo, nivel, **kw):
+    """POST a Gemini con nivel de razonamiento; si el modelo no lo acepta (400), reintenta sin él."""
+    url = f"{GEMINI_BASE}{modelo}:{metodo}"
+    if nivel:
+        con_nivel = dict(cuerpo)
+        con_nivel["generationConfig"] = {"thinkingConfig": {"thinkingLevel": nivel}}
+        r = requests.post(url, headers=_cabeceras_gemini(), json=con_nivel, **kw)
+        if r.status_code != 400:
+            return r
+        r.close()
+    return requests.post(url, headers=_cabeceras_gemini(), json=cuerpo, **kw)
+
+
+def gemini_stream(modelo, mensajes, sistema, nivel):
+    contenidos = [
+        {
+            "role": "user" if m["role"] == "user" else "model",
+            "parts": [{"text": m["text"]}],
+        }
+        for m in _contexto(mensajes)
+    ]
+    cuerpo = {"contents": contenidos}
+    if sistema.strip():
+        cuerpo["systemInstruction"] = {"parts": [{"text": sistema}]}
+    try:
+        r = _post_gemini(
+            "streamGenerateContent",
+            modelo,
+            cuerpo,
+            nivel,
+            params={"alt": "sse"},
+            stream=True,
+            timeout=(15, 150),
+        )
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError("Error de conexión: " + str(err))
+    if not r.ok:
+        raise RuntimeError(_error_api("Gemini", r, PISTAS_GEMINI))
+
+    hubo_texto = False
+    for j in _eventos_sse(r):
+        bloqueo = (j.get("promptFeedback") or {}).get("blockReason")
+        if bloqueo:
+            raise RuntimeError(f"Gemini bloqueó la solicitud ({bloqueo}). Intenta reformularla.")
+        for cand in j.get("candidates") or []:
+            for parte in (cand.get("content") or {}).get("parts") or []:
+                texto = parte.get("text")
+                if texto and not parte.get("thought"):
+                    hubo_texto = True
+                    yield texto
+    if not hubo_texto:
+        raise RuntimeError("Gemini no devolvió texto (puede haberse filtrado). Intenta reformular.")
+
+
+def gemini_transcribir(modelo, audio_bytes, mime):
+    """Convierte un audio en texto. Devuelve (ok, texto_o_error)."""
+    cuerpo = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "inlineData": {
+                            "mimeType": mime or "audio/wav",
+                            "data": base64.b64encode(audio_bytes).decode("ascii"),
+                        }
+                    },
+                    {
+                        "text": "Transcribe literalmente este audio en el idioma en que se habla. "
+                        "Devuelve únicamente la transcripción, sin comentarios."
+                    },
+                ],
+            }
+        ]
+    }
+    try:
+        r = _post_gemini("generateContent", modelo, cuerpo, "low", timeout=120)
+        if not r.ok:
+            return False, _error_api("Gemini", r, PISTAS_GEMINI)
+        partes = r.json()["candidates"][0]["content"]["parts"]
+        texto = "".join(p.get("text", "") for p in partes if not p.get("thought")).strip()
+        if not texto:
+            return False, "No se entendió nada en el audio."
+        return True, texto
+    except requests.exceptions.RequestException as err:
+        return False, "Error de conexión: " + str(err)
+    except Exception:
+        return False, "Respuesta inesperada al transcribir el audio."
+
+
+# ----- Claude (Anthropic) -----
+def claude_stream(modelo, mensajes, sistema):
+    cuerpo = {
+        "model": modelo,
+        "max_tokens": 8192,
+        "stream": True,
+        "messages": [{"role": m["role"], "content": m["text"]} for m in _contexto(mensajes)],
+    }
+    if sistema.strip():
+        cuerpo["system"] = sistema
+    try:
+        r = requests.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=cuerpo,
+            stream=True,
+            timeout=(15, 120),
+        )
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError("Error de conexión: " + str(err))
+    if not r.ok:
+        raise RuntimeError(_error_api("Claude", r, PISTAS_CLAUDE))
+
+    hubo_texto = False
+    for j in _eventos_sse(r):
+        if j.get("type") == "error":
+            raise RuntimeError("Claude: " + str((j.get("error") or {}).get("message", "error")))
+        if j.get("type") == "content_block_delta":
+            texto = (j.get("delta") or {}).get("text")
+            if texto:
+                hubo_texto = True
+                yield texto
+    if not hubo_texto:
+        raise RuntimeError("Claude no devolvió texto. Intenta reformular.")
+
+
+# ----- ChatGPT (OpenAI) -----
+def openai_stream(modelo, mensajes, sistema):
+    msgs = []
+    if sistema.strip():
+        msgs.append({"role": "system", "content": sistema})
+    msgs += [{"role": m["role"], "content": m["text"]} for m in _contexto(mensajes)]
+    try:
+        r = requests.post(
+            OPENAI_URL,
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": modelo, "stream": True, "messages": msgs},
+            stream=True,
+            timeout=(15, 120),
+        )
+    except requests.exceptions.RequestException as err:
+        raise RuntimeError("Error de conexión: " + str(err))
+    if not r.ok:
+        raise RuntimeError(_error_api("ChatGPT", r, PISTAS_OPENAI))
+
+    hubo_texto = False
+    for j in _eventos_sse(r):
+        for ch in j.get("choices") or []:
+            texto = (ch.get("delta") or {}).get("content")
+            if texto:
+                hubo_texto = True
+                yield texto
+    if not hubo_texto:
+        raise RuntimeError("ChatGPT no devolvió texto. Intenta reformular.")
+
+
+def generar(proveedor, modelo, mensajes, sistema, nivel):
+    if proveedor == "Claude":
+        return claude_stream(modelo, mensajes, sistema)
+    if proveedor == "ChatGPT":
+        return openai_stream(modelo, mensajes, sistema)
+    return gemini_stream(modelo, mensajes, sistema, nivel)
+
+
+# ----- Chats guardados -----
+def limpiar_chats(obj):
+    """Valida un diccionario de chats (del archivo o de una importación)."""
+    limpios = {}
+    if not isinstance(obj, dict):
+        return limpios
+    for cid, c in obj.items():
+        if not isinstance(c, dict) or not isinstance(c.get("mensajes"), list):
+            continue
+        mensajes = [
+            {"role": m["role"], "text": m["text"]}
+            for m in c["mensajes"]
+            if isinstance(m, dict)
+            and m.get("role") in ("user", "assistant")
+            and isinstance(m.get("text"), str)
+        ]
+        limpios[str(cid)] = {
+            "titulo": str(c.get("titulo") or TITULO_NUEVO)[:60],
+            "mensajes": mensajes,
+            "actualizado": float(c.get("actualizado") or 0),
+        }
+    return limpios
+
+
+def cargar_datos():
+    """Devuelve (chats, id_del_chat_actual_guardado)."""
+    try:
+        with open(CHATS_ARCHIVO, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        return limpiar_chats(datos.get("chats")), str(datos.get("actual") or "")
+    except Exception:
+        return {}, ""
+
+
+def _con_mensajes():
+    return {k: v for k, v in st.session_state["chats"].items() if v["mensajes"]}
+
+
+def guardar_chats():
+    try:
+        ss = st.session_state
+        con = _con_mensajes()
+        actual = ss.get("chat_actual")
+        tmp = CHATS_ARCHIVO + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"chats": con, "actual": actual if actual in con else ""}, f, ensure_ascii=False)
+        os.replace(tmp, CHATS_ARCHIVO)
+    except Exception:
+        pass  # si no se puede escribir en disco, el chat sigue funcionando en memoria
+
+
+def _podar_vacios():
+    """Quita los chats sin mensajes (menos el actual) para no llenar la lista."""
+    ss = st.session_state
+    for k in [k for k, v in ss["chats"].items() if not v["mensajes"] and k != ss.get("chat_actual")]:
+        ss["chats"].pop(k, None)
+
+
+def _crear_chat():
+    cid = str(int(time.time() * 1000))
+    st.session_state["chats"][cid] = {
+        "titulo": TITULO_NUEVO,
+        "mensajes": [],
+        "actualizado": time.time(),
+    }
+    st.session_state["chat_actual"] = cid
+    _podar_vacios()
+
+
+def pedir_cerrar_menu():
+    st.session_state["cerrar_menu"] = True
+
+
+def nuevo_chat():
+    ss = st.session_state
+    actual = ss["chats"].get(ss.get("chat_actual"))
+    if actual is None or actual["mensajes"]:
+        _crear_chat()
+    ss["editando"] = None
+    pedir_cerrar_menu()
+
+
+def seleccionar_chat(cid):
+    ss = st.session_state
+    if cid in ss["chats"]:
+        ss["chat_actual"] = cid
+        _podar_vacios()
+        guardar_chats()  # recuerda cuál era el último chat abierto
+    ss["buscar_chats"] = ""
+    ss["editando"] = None
+    pedir_cerrar_menu()
+
+
+def borrar_chat():
+    ss = st.session_state
+    ss["chats"].pop(ss.get("chat_actual"), None)
+    ss["chat_actual"] = None
+    ss["confirmar_borrado"] = False
+    ss["editando"] = None
+    guardar_chats()
+
+
+def renombrar_chat(cid):
+    nuevo = st.session_state.get(f"ren_{cid}", "").strip()
+    if nuevo and cid in st.session_state["chats"]:
+        st.session_state["chats"][cid]["titulo"] = nuevo[:60]
+        guardar_chats()
+
+
+def restaurar_sistema():
+    st.session_state["sistema"] = SISTEMA_DEF
+
+
+def elegir_sugerencia(texto):
+    st.session_state["prompt_pendiente"] = texto
+
+
+def regenerar_respuesta():
+    """Repite la última respuesta (o reintenta si el último mensaje quedó sin respuesta)."""
+    chat = st.session_state["chats"].get(st.session_state.get("chat_actual"))
+    if chat and chat["mensajes"]:
+        if chat["mensajes"][-1]["role"] == "assistant":
+            chat["mensajes"].pop()
+        if chat["mensajes"] and chat["mensajes"][-1]["role"] == "user":
+            st.session_state["regenerar"] = True
+            guardar_chats()
+
+
+def mostrar_anteriores():
+    st.session_state["ver_todo"] = st.session_state.get("chat_actual")
+
+
+# ----- Editar mensajes -----
+def iniciar_edicion(i):
+    st.session_state["editando"] = i
+
+
+def cancelar_edicion():
+    st.session_state["editando"] = None
+
+
+def guardar_edicion(i):
+    """Reemplaza el mensaje i, borra lo que venía después y vuelve a pedir la respuesta."""
+    ss = st.session_state
+    chat = ss["chats"].get(ss.get("chat_actual"))
+    nuevo = str(ss.get(f"edit_text_{i}", "")).strip()
+    ss["editando"] = None
+    if not chat or not nuevo or i >= len(chat["mensajes"]):
+        return
+    chat["mensajes"] = chat["mensajes"][:i]
+    if i == 0:
+        chat["titulo"] = TITULO_NUEVO
+    ss["prompt_pendiente"] = nuevo
+    guardar_chats()
+
+
+def importar_chats(contenido):
+    try:
+        nuevos = limpiar_chats(json.loads(contenido.decode("utf-8")).get("chats"))
+    except Exception:
+        return 0
+    st.session_state["chats"].update(nuevos)
+    guardar_chats()
+    return len(nuevos)
+
+
+def iniciar_estado():
+    ss = st.session_state
+    if "chats" not in ss:
+        chats, guardado = cargar_datos()
+        ss["chats"] = chats
+        # Restaura el chat donde estabas: primero el de la URL, luego el último guardado, luego el más reciente
+        c_url = str(st.query_params.get("c", ""))
+        con = [k for k, v in chats.items() if v["mensajes"]]
+        if c_url in con:
+            ss["chat_actual"] = c_url
+        elif guardado in con:
+            ss["chat_actual"] = guardado
+        elif con:
+            ss["chat_actual"] = max(con, key=lambda k: chats[k]["actualizado"])
+        else:
+            ss["chat_actual"] = None
+        s_url = str(st.query_params.get("s", ""))
+        if s_url.isdigit() and int(s_url) < len(SECCIONES):
+            ss["seccion"] = SECCIONES[int(s_url)]
+    ss.setdefault("seccion", SECCIONES[0])
+    ss.setdefault("audio_n", 0)
+    ss.setdefault("sistema", SISTEMA_DEF)
+    ss.setdefault("razonamiento", "Bajo")
+    ss.setdefault("fuente", "Normal")
+    ss.setdefault("buscar_chats", "")
+    ss.setdefault("editando", None)
+    if PROVEEDORES and ss.get("proveedor") not in PROVEEDORES:
+        ss["proveedor"] = PROVEEDORES[0]
+    for p in MODELOS:
+        ss.setdefault(f"modelo_{p}", MODELO_DEF[p])
+        ss.setdefault(f"modelo_custom_{p}", "")
+    if ss.get("chat_actual") not in ss["chats"]:
+        _crear_chat()
+
+
+def sincronizar_url():
+    """Guarda en la URL el chat y la sección abiertos, para que al recargar sigas donde estabas."""
+    ss = st.session_state
+    try:
+        qp = st.query_params
+        cid = ss.get("chat_actual")
+        if cid and ss["chats"].get(cid, {}).get("mensajes"):
+            if qp.get("c") != cid:
+                qp["c"] = cid
+        elif "c" in qp:
+            del qp["c"]
+        s = str(SECCIONES.index(ss["seccion"]))
+        if qp.get("s") != s:
+            qp["s"] = s
+    except Exception:
+        pass
+
+
+def estilo_fuente():
+    tam = TAMANOS.get(st.session_state.get("fuente"), TAMANOS["Normal"])
+    st.markdown(
+        "<style>div[data-testid='stChatMessage'] p, div[data-testid='stChatMessage'] li "
+        f"{{ font-size: {tam}rem; line-height: 1.65; }}</style>",
+        unsafe_allow_html=True,
+    )
+
+
+def modelo_actual(proveedor):
+    custom = st.session_state.get(f"modelo_custom_{proveedor}", "").strip()
+    return custom or st.session_state.get(f"modelo_{proveedor}", MODELO_DEF[proveedor])
+
+
+def cerrar_menu_si_toca():
+    """En el celular, cierra el menú lateral después de elegir algo."""
+    if st.session_state.pop("cerrar_menu", False):
+        components.html(
+            """<script>
+            setTimeout(function () {
+              try {
+                const d = window.parent.document;
+                const sb = d.querySelector('section[data-testid="stSidebar"]');
+                if (window.parent.innerWidth < 900 && sb && sb.getAttribute('aria-expanded') !== 'false') {
+                  const b = d.querySelector('[data-testid="stSidebarCollapseButton"] button')
+                    || d.querySelector('[data-testid="stSidebarCollapseButton"]')
+                    || sb.querySelector('button[kind="header"]');
+                  if (b) b.click();
+                }
+              } catch (e) {}
+            }, 150);
+            </script>""",
+            height=0,
+        )
+
+
+# ----- Mostrar mensajes con bloques de código (copiar y descargar) -----
+def partir_mensaje(texto):
+    """Separa un mensaje en trozos de texto y bloques de código."""
+    trozos = []
+    pos = 0
+    for m in PATRON_CODIGO.finditer(texto):
+        if m.start() > pos:
+            trozos.append({"tipo": "texto", "texto": texto[pos : m.start()]})
+        trozos.append(
+            {"tipo": "codigo", "lenguaje": m.group(1).strip().lower(), "texto": m.group(2).rstrip("\n")}
+        )
+        pos = m.end()
+    if pos < len(texto):
+        trozos.append({"tipo": "texto", "texto": texto[pos:]})
+    return trozos
+
+
+def nombre_descarga(trozos, i, n_codigo):
+    """Intenta sacar el nombre del archivo de la línea previa al bloque de código."""
+    lenguaje = trozos[i]["lenguaje"]
+    ext = EXTENSIONES.get(lenguaje, ".txt" if lenguaje else ".lua")
+    if i > 0 and trozos[i - 1]["tipo"] == "texto":
+        lineas = [x for x in trozos[i - 1]["texto"].strip().splitlines() if x.strip()]
+        if lineas:
+            m = PATRON_ARCHIVO.search(lineas[-1])
+            if m:
+                return m.group(0)
+    return f"codigo_{n_codigo}{ext}"
+
+
+def mostrar_mensaje(texto, clave, con_descarga=True):
+    trozos = partir_mensaje(texto)
+    n_codigo = 0
+    for i, tz in enumerate(trozos):
+        if tz["tipo"] == "texto":
+            if tz["texto"].strip():
+                st.markdown(tz["texto"])
+        else:
+            n_codigo += 1
+            leng = "lua" if tz["lenguaje"] == "luau" else (tz["lenguaje"] or None)
+            st.code(tz["texto"], language=leng)  # el icono de copiar viene incluido
+            if con_descarga:
+                st.download_button(
+                    "⬇️ Descargar archivo",
+                    data=tz["texto"].encode("utf-8"),
+                    file_name=nombre_descarga(trozos, i, n_codigo),
+                    mime="text/plain",
+                    key=f"dl_{clave}_{n_codigo}",
+                )
+
+
+def _campo(valor, nombre):
+    try:
+        return valor[nombre]
+    except Exception:
+        return getattr(valor, nombre, None)
+
+
+# =====================================================================
+# MENÚ LATERAL (☰)
+# =====================================================================
+def _grupo_fecha(ts):
+    dias = (datetime.date.today() - datetime.date.fromtimestamp(ts)).days
+    if dias <= 0:
+        return "Hoy"
+    if dias == 1:
+        return "Ayer"
+    if dias <= 7:
+        return "Últimos 7 días"
+    return "Anteriores"
+
+
+def lista_chats_lateral():
+    ss = st.session_state
+    chats = ss["chats"]
+    st.button("✏️  Nuevo chat", on_click=nuevo_chat, use_container_width=True, key="side_nuevo")
+    q = st.text_input(
+        "Buscar",
+        key="buscar_chats",
+        placeholder="🔍 Buscar chats",
+        label_visibility="collapsed",
+    )
+    qn = q.strip().lower()
+    visibles = [
+        cid
+        for cid, c in chats.items()
+        if c["mensajes"]
+        and (
+            not qn
+            or qn in c["titulo"].lower()
+            or any(qn in m["text"].lower() for m in c["mensajes"])
+        )
+    ]
+    visibles.sort(key=lambda k: chats[k]["actualizado"], reverse=True)
+    if not qn:
+        visibles = visibles[:MAX_CHATS_LATERAL]
+
+    if not visibles:
+        st.caption("Aún no hay chats guardados." if not qn else "Sin resultados.")
+    grupo_prev = None
+    for cid in visibles:
+        c = chats[cid]
+        g = _grupo_fecha(c["actualizado"])
+        if g != grupo_prev:
+            st.markdown(f'<div class="grupo-chats">{g}</div>', unsafe_allow_html=True)
+            grupo_prev = g
+        titulo = c["titulo"] if len(c["titulo"]) <= 34 else c["titulo"][:33] + "…"
+        st.button(
+            titulo,
+            key=f"chat_{cid}",
+            on_click=seleccionar_chat,
+            args=(cid,),
+            type="primary" if cid == ss["chat_actual"] else "secondary",
+            use_container_width=True,
+        )
+
+    chat = chats[ss["chat_actual"]]
+    with st.expander("⚙️ Ajustes del chat"):
+        st.select_slider("Tamaño de letra", options=list(TAMANOS), key="fuente")
+        st.text_area(
+            "Instrucciones para la IA",
+            key="sistema",
+            height=180,
+            help="Define cómo responde la IA. Se aplica a todos los chats.",
+        )
+        st.button("Restaurar instrucciones originales", on_click=restaurar_sistema)
+        if chat["mensajes"]:
+            cid = ss["chat_actual"]
+            st.text_input(
+                "Renombrar este chat",
+                value=chat["titulo"],
+                key=f"ren_{cid}",
+                on_change=renombrar_chat,
+                args=(cid,),
+            )
+            st.checkbox("Confirmo que quiero borrar este chat", key="confirmar_borrado")
+            st.button(
+                "🗑️ Borrar este chat",
+                on_click=borrar_chat,
+                disabled=not ss.get("confirmar_borrado", False),
+            )
+        st.divider()
+        st.download_button(
+            "⬇️ Exportar todos los chats",
+            data=json.dumps({"chats": _con_mensajes()}, ensure_ascii=False, indent=1).encode("utf-8"),
+            file_name="chats_asset_hub.json",
+            mime="application/json",
+        )
+        subido = st.file_uploader("Importar chats (.json)", type=["json"], key="importar_json")
+        if subido is not None and st.button("Importar"):
+            n = importar_chats(subido.getvalue())
+            st.success(f"Se importaron {n} chats." if n else "El archivo no tiene chats válidos.")
+        st.caption(
+            "Los chats se guardan en el servidor de la app y se restauran al recargar. Si la app se "
+            "reinicia o se vuelve a desplegar pueden perderse: usa **Exportar** de vez en cuando "
+            "para tener respaldo."
+        )
+
+
+def barra_lateral():
+    with st.sidebar:
+        st.markdown('<div class="marca-lateral">✦ Asset Hub</div>', unsafe_allow_html=True)
+        st.radio(
+            "Menú",
+            SECCIONES,
+            key="seccion",
+            label_visibility="collapsed",
+            on_change=pedir_cerrar_menu,
+        )
+        if st.session_state["seccion"] == SECCIONES[0] and PROVEEDORES:
+            st.divider()
+            lista_chats_lateral()
+        st.divider()
+        if st.button("🚪  Cerrar sesión", use_container_width=True, key="side_salir"):
+            st.query_params.clear()
+            st.session_state.clear()
+            st.rerun()
+
+
+# =====================================================================
+# PÁGINA: CHAT IA
+# =====================================================================
+def pagina_chat():
+    ss = st.session_state
+    if not PROVEEDORES:
+        st.markdown(
+            '<div class="titulo-pagina">💬 Chat IA</div>', unsafe_allow_html=True
+        )
+        st.warning(
+            "Falta una clave de IA. Agrega en los secrets de Streamlit al menos una: "
+            "**GEMINI_API_KEY** (gratis en https://aistudio.google.com/apikey), "
+            "**ANTHROPIC_API_KEY** u **OPENAI_API_KEY**."
+        )
+        return
+
+    chats = ss["chats"]
+    elegido = ss["chat_actual"]
+    chat = chats[elegido]
+    mensajes = chat["mensajes"]
+
+    # --- Barra superior: modelo (como el selector de arriba) y chat nuevo ---
+    c_izq, c_der = st.columns([5, 1])
+    with c_izq:
+        etiqueta = f"{ss['proveedor']} · {modelo_actual(ss['proveedor'])}"
+        if hasattr(st, "popover"):
+            contenedor = st.popover(etiqueta)
+        else:
+            contenedor = st.expander("⚙️ " + etiqueta)
+        with contenedor:
+            if len(PROVEEDORES) > 1:
+                st.radio("IA", PROVEEDORES, key="proveedor", horizontal=True)
+            prov_sel = ss["proveedor"]
+            st.selectbox("Modelo", MODELOS[prov_sel], key=f"modelo_{prov_sel}")
+            st.text_input(
+                "Modelo personalizado (opcional)",
+                key=f"modelo_custom_{prov_sel}",
+                placeholder="Si lo llenas, se usa este",
+            )
+            if prov_sel == "Gemini":
+                st.select_slider(
+                    "Razonamiento (Bajo = más rápido)",
+                    options=list(NIVELES),
+                    key="razonamiento",
+                )
+    c_der.button("✏️", on_click=nuevo_chat, key="top_nuevo", help="Chat nuevo", use_container_width=True)
+
+    proveedor = ss["proveedor"]
+    modelo = modelo_actual(proveedor)
+    nivel = NIVELES.get(ss["razonamiento"])
+
+    # --- Zona de mensajes (arriba) y entradas (abajo) ---
+    zona_mensajes = st.container()
+
+    prompt = ss.pop("prompt_pendiente", None)
+    desde_audio = False
+    error_audio = None
+
+    if not ENTRADA_AUDIO and GEMINI_API_KEY and hasattr(st, "audio_input"):
+        with st.expander("🎤 Hablar con la IA"):
+            audio = st.audio_input("Graba tu mensaje", key=f"audio_{ss['audio_n']}")
+            if audio is not None and st.button("📨 Enviar audio", type="primary"):
+                with st.spinner("Transcribiendo..."):
+                    ok, texto = gemini_transcribir(modelo_actual("Gemini"), audio.getvalue(), audio.type)
+                if ok:
+                    prompt = texto
+                    desde_audio = True
+                else:
+                    error_audio = texto
+
+    marcador = f"Pregúntale a {proveedor}…"
+    if ENTRADA_AUDIO:
+        entrada = st.chat_input(marcador, accept_audio=True)
+    else:
+        entrada = st.chat_input(marcador)
+
+    if entrada:
+        if isinstance(entrada, str):
+            prompt = entrada
+        else:
+            texto_in = _campo(entrada, "text")
+            audio_in = _campo(entrada, "audio")
+            if texto_in and str(texto_in).strip():
+                prompt = str(texto_in)
+            elif audio_in is not None:
+                if not GEMINI_API_KEY:
+                    error_audio = "Para usar audio hace falta GEMINI_API_KEY (la transcripción usa Gemini)."
+                else:
+                    with st.spinner("Transcribiendo..."):
+                        ok, texto = gemini_transcribir(
+                            modelo_actual("Gemini"),
+                            audio_in.getvalue(),
+                            getattr(audio_in, "type", None) or "audio/wav",
+                        )
+                    if ok:
+                        prompt = texto
+                    else:
+                        error_audio = texto
+
+    regenerar = ss.pop("regenerar", False)
+
+    # --- Mostrar historial y responder ---
+    with zona_mensajes:
+        if error_audio:
+            st.error(error_audio)
+
+        if not mensajes and not prompt and not regenerar:
+            st.markdown(
+                '<div class="saludo"><div class="estrella">✦</div>'
+                f'<div class="texto">¿Cómo puedo ayudarte,<br>{html.escape(APP_USER)}?</div></div>',
+                unsafe_allow_html=True,
+            )
+            for i in range(0, len(SUGERENCIAS), 2):
+                cols = st.columns(2)
+                for col, (etiq, texto) in zip(cols, SUGERENCIAS[i : i + 2]):
+                    col.button(
+                        etiq,
+                        key=f"sug_{i}_{etiq}",
+                        on_click=elegir_sugerencia,
+                        args=(texto,),
+                        use_container_width=True,
+                    )
+
+        # Solo se dibujan los últimos mensajes (más fluido); el resto se muestra con un botón
+        inicio = 0
+        if len(mensajes) > MAX_VISIBLES and ss.get("ver_todo") != elegido:
+            inicio = len(mensajes) - MAX_VISIBLES
+            st.button(
+                f"⬆️ Ver {inicio} mensajes anteriores",
+                on_click=mostrar_anteriores,
+                key="btn_anteriores",
+                use_container_width=True,
+            )
+
+        for i in range(inicio, len(mensajes)):
+            m = mensajes[i]
+            if m["role"] == "assistant":
+                with st.chat_message("assistant", avatar="✨"):
+                    mostrar_mensaje(
+                        m["text"], f"{elegido}_{i}", con_descarga=i >= len(mensajes) - MAX_CON_DESCARGA
+                    )
+            elif ss.get("editando") == i:
+                with st.chat_message("user"):
+                    st.text_area(
+                        "Editar mensaje",
+                        value=m["text"],
+                        key=f"edit_text_{i}",
+                        height=150,
+                        label_visibility="collapsed",
+                    )
+                    b1, b2 = st.columns(2)
+                    b1.button(
+                        "✅ Enviar",
+                        key=f"edit_ok_{i}",
+                        on_click=guardar_edicion,
+                        args=(i,),
+                        type="primary",
+                        use_container_width=True,
+                    )
+                    b2.button(
+                        "Cancelar",
+                        key=f"edit_no_{i}",
+                        on_click=cancelar_edicion,
+                        use_container_width=True,
+                    )
+                st.caption("Al enviar, se borra lo que venía después de este mensaje y la IA responde de nuevo.")
+            else:
+                with st.chat_message("user"):
+                    st.markdown(m["text"])
+                st.button(
+                    "✏️",
+                    key=f"lapiz_{i}",
+                    on_click=iniciar_edicion,
+                    args=(i,),
+                    help="Editar mensaje",
+                )
+
+        if mensajes and not prompt and not regenerar:
+            if mensajes[-1]["role"] == "assistant":
+                st.button("🔁 Regenerar", on_click=regenerar_respuesta, key="btn_regenerar")
+            else:
+                st.button("🔁 Reintentar respuesta", on_click=regenerar_respuesta, key="btn_reintentar")
+
+        generar_resp = False
+        if prompt:
+            mensajes.append({"role": "user", "text": prompt})
+            if chat["titulo"] == TITULO_NUEVO:
+                chat["titulo"] = " ".join(prompt.split())[:40] or TITULO_NUEVO
+            chat["actualizado"] = time.time()
+            guardar_chats()  # el mensaje queda guardado aunque cierres la app a mitad de respuesta
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            generar_resp = True
+        elif regenerar and mensajes and mensajes[-1]["role"] == "user":
+            generar_resp = True
+
+        if generar_resp:
+            completo = False
+            hubo_error = False
+            texto_final = ""
+            with st.chat_message("assistant", avatar="✨"):
+                ph = st.empty()
+                ph.markdown(PUNTOS_ESCRIBIENDO, unsafe_allow_html=True)
+                buf = []
+                try:
+                    ultimo = 0.0
+                    for t in generar(proveedor, modelo, mensajes, ss["sistema"], nivel):
+                        buf.append(t)
+                        ahora = time.time()
+                        if ahora - ultimo >= INTERVALO_STREAM:  # actualiza poco: más fluido
+                            ph.markdown("".join(buf) + " ▌")
+                            ultimo = ahora
+                    completo = True
+                except Exception as err:
+                    hubo_error = True
+                    ph.empty()
+                    st.error(f"❌ {err}")
+                finally:
+                    # Guarda lo que alcanzó a llegar aunque se corte la conexión o cierres la app
+                    texto_final = "".join(buf).strip()
+                    if texto_final:
+                        if not completo:
+                            texto_final += "\n\n*⚠️ Respuesta interrumpida.*"
+                        mensajes.append({"role": "assistant", "text": texto_final})
+                        chat["actualizado"] = time.time()
+                    guardar_chats()
+                if hubo_error:
+                    st.button("🔁 Reintentar", on_click=regenerar_respuesta, key="btn_reintentar_err")
+            if completo and texto_final:
+                if desde_audio:
+                    ss["audio_n"] += 1  # limpia la grabación para la próxima
+                st.rerun()  # vuelve a dibujar con botones de copiar, descargar, editar y regenerar
+
+
+# =====================================================================
+# PÁGINA: ASSETS
+# =====================================================================
+def titulo_pagina(icono, titulo, sub):
+    st.markdown(
+        f'<div class="titulo-pagina">{icono} {titulo}</div><div class="sub-pagina">{sub}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def pagina_assets():
+    titulo_pagina(
+        "📦",
+        "Subir assets",
+        "Modelos .fbx .gltf .glb y animaciones .rbxm (máx. 20 MB cada uno).",
+    )
+
+    with st.container(border=True):
+        st.markdown("**1 · Elige tus archivos**")
+        archivos = st.file_uploader(
+            "Archivos",
+            type=["fbx", "gltf", "glb", "rbxm"],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            key="uploader_assets",
+        )
+        if archivos:
+            total_mb = sum(f.size for f in archivos) / (1024 * 1024)
+            st.caption(f"{len(archivos)} archivo(s) · {total_mb:.1f} MB en total")
+        tipo_rbxm = st.radio(
+            "Los archivos .rbxm son:", ["Animación", "Modelo"], horizontal=True
+        )
+
+    nombres = []
+    descripcion = "Subido desde Asset Hub."
+    if archivos:
+        with st.container(border=True):
+            st.markdown("**2 · Nombres y descripción**")
+            prefijo = st.text_input(
+                "Prefijo opcional (se añade al inicio de todos los nombres)",
+                placeholder="Ej: Katana_",
+            )
+            descripcion = st.text_input("Descripción (para todos)", value=descripcion)
+
+            for i, f in enumerate(archivos):
+                base = os.path.splitext(f.name)[0]
+                n = st.text_input(
+                    f"📄 {f.name}",
+                    value=base,
+                    max_chars=50,
+                    key=f"nombre_{i}_{f.name}_{f.size}",
+                )
+                final = (prefijo.strip() + n.strip())[:50] or "MiAsset"
+                nombres.append(final)
+            st.caption("Roblox permite nombres de hasta 50 caracteres.")
+
+    if st.button(
+        "🚀 Subir a Roblox",
+        type="primary",
+        disabled=not archivos,
+        use_container_width=True,
+    ):
+        filas = []
+        barra = st.progress(0.0)
+        estado = st.empty()
+
+        for i, f in enumerate(archivos):
+            nombre_final = nombres[i]
+            estado.info(f"Subiendo {i + 1}/{len(archivos)}: {nombre_final} ...")
+            ext = os.path.splitext(f.name)[1].lower()
+            contenido = f.getvalue()
+
+            if ext not in FORMATOS:
+                ok, aid, msg = False, "", "Formato no aceptado."
+            elif not contenido:
+                ok, aid, msg = False, "", "El archivo esta vacio."
+            elif len(contenido) > MAX_BYTES:
+                ok, aid, msg = False, "", "Supera los 20 MB."
+            else:
+                tipo_asset, mime = FORMATOS[ext]
+                if ext == ".rbxm":
+                    tipo_asset = "Animation" if tipo_rbxm == "Animación" else "Model"
+                ok, aid, msg = subir_archivo(
+                    f.name, contenido, tipo_asset, mime, nombre_final, descripcion
+                )
+
+            filas.append(
+                {
+                    "Nombre": nombre_final,
+                    "Archivo": f.name,
+                    "Resultado": "✅ OK" if ok else "❌ ERROR",
+                    "Asset ID": aid,
+                    "rbxassetid": f"rbxassetid://{aid}" if aid else "",
+                    "Detalle": msg,
+                }
+            )
+            barra.progress((i + 1) / len(archivos))
+
+        estado.empty()
+        barra.empty()
+        st.session_state["resultados"] = filas
+
+    if st.session_state.get("resultados"):
+        filas = st.session_state["resultados"]
+        ok_n = sum(1 for x in filas if x["Resultado"].startswith("✅"))
+        st.divider()
+        st.markdown("### Resultados")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total", len(filas))
+        c2.metric("Correctos", ok_n)
+        c3.metric("Con error", len(filas) - ok_n)
+
+        for x in filas:
+            with st.container(border=True):
+                st.markdown(f"**{x['Nombre']}** · {x['Resultado']}")
+                if x["rbxassetid"]:
+                    st.code(x["rbxassetid"], language=None)
+                st.caption(f"{x['Archivo']} · {x['Detalle']}")
+
+        ids = [f"{x['Nombre']}: {x['rbxassetid']}" for x in filas if x["rbxassetid"]]
+        if ids:
+            st.markdown("**Copiar todos los IDs**")
+            st.code("\n".join(ids), language=None)
+
+        st.link_button(
+            "Mis creaciones en Roblox",
+            "https://create.roblox.com/dashboard/creations",
+            use_container_width=True,
+        )
+
+
+# =====================================================================
+# PÁGINA: PUBLICAR JUEGO
+# =====================================================================
+def pagina_juego():
+    titulo_pagina(
+        "🎮",
+        "Publicar juego",
+        "Sube un archivo .rbxl / .rbxlx (máx. 100 MB) a un place que ya existe.",
+    )
+    st.info(
+        "Esto **reemplaza el contenido de un place que ya existe**. "
+        "No crea juegos nuevos. Crea antes un place vacío en Roblox y copia sus IDs."
+    )
+    if USA_KEY_SEPARADA:
+        st.caption("🔑 Usando la API Key de juegos (ROBLOX_PLACE_API_KEY).")
+    else:
+        st.caption("🔑 Usando la API Key general (ROBLOX_API_KEY). Puedes añadir ROBLOX_PLACE_API_KEY en los secrets.")
+
+    with st.container(border=True):
+        st.markdown("**1 · Datos del place**")
+        universe_id = st.text_input("Universe ID", value=UNIVERSE_ID_DEF, key="universe_id")
+        place_id = st.text_input("Place ID", value=PLACE_ID_DEF, key="place_id")
+
+    with st.container(border=True):
+        st.markdown("**2 · Archivo del juego**")
+        archivo_juego = st.file_uploader(
+            "Archivo del juego",
+            type=["rbxl", "rbxlx"],
+            accept_multiple_files=False,
+            key="uploader_juego",
+            label_visibility="collapsed",
+        )
+        if archivo_juego:
+            st.caption(f"{archivo_juego.name} · {archivo_juego.size / (1024 * 1024):.1f} MB")
+
+    with st.container(border=True):
+        st.markdown("**3 · Modo y confirmación**")
+        modo = st.radio(
+            "Modo",
+            ["Publicar (visible para todos)", "Guardar (sin publicar)"],
+            help="Guardar sube la versión pero no la hace pública. Podrás publicarla desde Studio.",
+        )
+        tipo_version = "Published" if modo.startswith("Publicar") else "Saved"
+        confirmar = st.checkbox("Entiendo que se reemplazará el contenido actual del place.")
+
+    listo = bool(
+        archivo_juego and universe_id.strip().isdigit() and place_id.strip().isdigit() and confirmar
+    )
+
+    if st.button(
+        "🎮 Subir juego",
         type="primary",
         disabled=not listo,
         use_container_width=True,
@@ -2881,8 +4396,14 @@ def pagina_studio_lite():
         ok_ids = uid.strip().isdigit() and pid.strip().isdigit()
         confirmar = st.checkbox("Entiendo que se reemplazará el contenido del place.", key="sl_ok")
 
+    nivel_txt = st.radio(
+        "Qué subir (si falla, prueba de arriba hacia abajo para ver dónde se rompe)",
+        list(studio_lite_builder.NIVELES),
+        index=len(studio_lite_builder.NIVELES) - 1,
+        key="sl_nivel",
+    )
     try:
-        datos, lista = studio_lite_builder.construir_rbxlx()
+        datos, lista = studio_lite_builder.construir_rbxlx(studio_lite_builder.NIVELES[nivel_txt])
     except Exception as err:
         st.error(f"❌ No se pudo armar el archivo: {err}")
         return
