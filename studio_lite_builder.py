@@ -56,9 +56,24 @@ def cargar_fuentes():
     return datos
 
 
-def construir_rbxlx():
-    """Devuelve (bytes_del_rbxlx, lista_de_scripts_incluidos)."""
+NIVELES = {
+    "1 · Mínimo (solo Workspace)": "minimo",
+    "2 · Carpetas y servicios, sin scripts": "estructura",
+    "3 · Con un solo script (Signal)": "un_script",
+    "4 · Completo (los 16 scripts)": "completo",
+}
+
+
+def construir_rbxlx(nivel="completo"):
+    """Devuelve (bytes_del_rbxlx, lista_de_scripts_incluidos).
+
+    nivel: "minimo", "estructura", "un_script" o "completo" (para encontrar qué rechaza Roblox).
+    """
     d = cargar_fuentes()
+    if nivel == "estructura":
+        d = {"modules": {}, "client": {}, "server": {}}
+    elif nivel == "un_script":
+        d = {"modules": {"Signal": d["modules"]["Signal"]}, "client": {}, "server": {}}
     b = _Constructor()
     incluidos = []
 
@@ -84,6 +99,9 @@ def construir_rbxlx():
         '<Meta name="ExplicitAutoJoints">true</Meta>'
     )
     b.item("Workspace", "Workspace")
+    if nivel == "minimo":
+        b.partes.append("</roblox>")
+        return "".join(b.partes).encode("utf-8"), []
     b.item("Players", "Players")
     b.item("Lighting", "Lighting")
     b.item(
