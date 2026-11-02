@@ -5,7 +5,8 @@
 #              y el chat/sección se restauran al recargar o volver a abrir la página
 #  - Assets: modelos (.fbx/.gltf/.glb) y animaciones/modelos (.rbxm/.rbxmx)  -> usa ROBLOX_API_KEY
 #  - NUEVO: detecta PackageLink en .rbxm/.rbxmx y sube una COPIA convertida a modelo normal
-#           (package_cleaner.py, en la misma carpeta que esta app)
+#           (package_cleaner.py, en la misma carpeta que esta app). Ahora siempre muestra el
+#           estado de cada archivo (con PackageLink / sin PackageLink / error) y un diagnóstico.
 #  - Publicar juegos (.rbxl/.rbxlx) en un place existente      -> usa ROBLOX_PLACE_API_KEY
 #  - Instalar Studio Lite: arma un .rbxlx con los scripts y lo sube (studio_lite_builder.py
 #                          + studio_lite_scripts.json, en la misma carpeta que esta app)
@@ -1379,23 +1380,24 @@ def pagina_assets():
     convertir = False
     informes = {}
     if archivos and package_cleaner is None:
-        st.caption(
-            "ℹ️ No se cargó package_cleaner.py, no se puede detectar PackageLink: "
-            + _ERROR_PACKAGE_CLEANER
-        )
+        st.error("❌ No se cargó package_cleaner.py: " + _ERROR_PACKAGE_CLEANER)
     elif archivos:
-        for i, f in enumerate(archivos):
-            if os.path.splitext(f.name)[1].lower() in EXT_ROBLOX:
-                informes[i] = package_cleaner.analizar(f.getvalue())
         hay_paquetes = False
-        for i, r in informes.items():
-            nombre_f = archivos[i].name
+        for i, f in enumerate(archivos):
+            if os.path.splitext(f.name)[1].lower() not in EXT_ROBLOX:
+                continue
+            r = package_cleaner.analizar(f.getvalue())
+            informes[i] = r
             if r["error"]:
-                st.warning(f"⚠️ {nombre_f}: {r['error']}")
+                st.error(f"⚠️ {f.name}: {r['error']}")
             elif r["paquetes"]:
                 hay_paquetes = True
                 det = ", ".join(f"{p['nombre']} ({p['nivel']})" for p in r["paquetes"])
-                st.warning(f"🔗 {nombre_f} contiene {len(r['paquetes'])} PackageLink: {det}")
+                st.warning(f"🔗 {f.name} contiene {len(r['paquetes'])} PackageLink: {det}")
+            else:
+                st.success(f"✅ {f.name}: sin PackageLink (se sube tal cual).")
+            with st.expander(f"🔎 Diagnóstico de {f.name}"):
+                st.caption(r.get("resumen", ""))
         if hay_paquetes:
             convertir = st.checkbox(
                 "Subir una copia convertida a modelo normal (quita solo los PackageLink)",
