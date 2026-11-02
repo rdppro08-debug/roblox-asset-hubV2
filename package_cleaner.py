@@ -4,16 +4,21 @@ Equivale a "Unlink from Package" de Roblox Studio: solo se eliminan las instanci
 PackageLink. Todo lo demás (partes, scripts, atributos, jerarquía, nombres, referencias) queda
 tal cual. El archivo original nunca se modifica: se devuelve un nuevo contenido en memoria.
 
+v2: - soporta chunks comprimidos con ZSTD (requiere `zstandard` en requirements.txt)
+    - analizar() devuelve además "resumen" (clases e instancias) para diagnosticar
+
 Uso:
-    info = analizar(datos)      -> {"formato", "paquetes": [...], "error"}
+    info = analizar(datos)      -> {"formato", "paquetes": [...], "resumen", "error"}
     nuevo, n = convertir(datos) -> (bytes de la copia sin PackageLink, cuántos se quitaron)
 """
 import re
 import struct
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 CLASE = "PackageLink"
 MAGIC_BIN = b"<roblox!\x89\xff\r\n\x1a\n"
+MAGIC_ZSTD = b"\x28\xb5\x2f\xfd"
 
 
 # ------------------------------------------------------------------ utilidades
@@ -23,6 +28,11 @@ def _formato(d):
     if d[:512].lstrip(b"\xef\xbb\xbf \r\n\t").startswith((b"<roblox", b"<?xml")):
         return "xml"
     return None
+
+
+def _resumen(contador, total):
+    top = ", ".join(f"{c}×{n}" for c, n in contador.most_common(10))
+    return f"{total} instancias · clases: {top or 'ninguna'}"
 
 
 # ------------------------------------------------------------------ binario (.rbxm)
@@ -63,6 +73,24 @@ def _lz4(src, n):
     return bytes(out)
 
 
+def _zstd(src, n):
+    try:
+        import zstandard
+
+        return zstandard.ZstdDecompressor().decompress(src, max_output_size=max(n, 1))
+    except ImportError:
+        pass
+    try:
+        from compression import zstd  # Python 3.14+
+
+        return zstd.decompress(src)
+    except ImportError:
+        raise ValueError(
+            "El archivo usa compresión ZSTD. Agrega la línea 'zstandard' a requirements.txt "
+            "y reinicia la app."
+        )
+
+
 def _chunks(d):
     pos, res = 32, []
     while pos + 16 <= len(d):
@@ -73,7 +101,8 @@ def _chunks(d):
             p = d[pos : pos + u]
             pos += u
         else:
-            p = _lz4(d[pos : pos + c], u)
+            datos = d[pos : pos + c]
+            p = _zstd(datos, u) if datos[:4] == MAGIC_ZSTD else _lz4(datos, u)
             pos += c
         if len(p) != u:
             raise ValueError("Chunk corrupto en el archivo")
@@ -162,7 +191,8 @@ def _analizar_bin(d):
                     "nivel": "principal" if padre.get(p, -1) == -1 else "anidado",
                 }
             )
-    return pk
+    cont = Counter({cn: len(inst[cid]) for cid, cn in clases.items()})
+    return pk, _resumen(cont, sum(cont.values()))
 
 
 def _chunk_bin(name, p):
@@ -202,7 +232,7 @@ def _convertir_bin(d):
     n_clases, n_inst = struct.unpack_from("<ii", d, 16)
     cabecera = d[:16] + struct.pack("<ii", len(mapa), n_inst - len(refs_q)) + d[24:32]
     nuevo = cabecera + b"".join(out)
-    if _analizar_bin(nuevo):  # verificación: debe quedar sin PackageLink y seguir leyéndose
+    if _analizar_bin(nuevo)[0]:  # verificación: debe quedar sin PackageLink y seguir leyéndose
         raise ValueError("La verificación final falló; no se generó la copia.")
     return nuevo, len(refs_q)
 
@@ -233,7 +263,8 @@ def _analizar_xml(d):
                 prof += 1
             a = padre.get(a)
         pk.append({"nombre": _nombre_xml(p), "nivel": "principal" if prof == 0 else "anidado"})
-    return pk
+    cont = Counter(it.get("class", "?") for it in raiz.iter("Item"))
+    return pk, _resumen(cont, sum(cont.values()))
 
 
 _PATRON_XML = re.compile(
@@ -246,27 +277,37 @@ def _contar_items(d):
 
 
 def _convertir_xml(d):
-    antes = _analizar_xml(d)
+    antes = _analizar_xml(d)[0]
     if not antes:
         return d, 0
     total = _contar_items(d)
     nuevo, n = _PATRON_XML.subn(b"", d)
-    if n != len(antes) or _analizar_xml(nuevo) or _contar_items(nuevo) != total - n:
+    if n != len(antes) or _analizar_xml(nuevo)[0] or _contar_items(nuevo) != total - n:
         raise ValueError("La verificación final falló; no se generó la copia.")
     return nuevo, n
 
 
 # ------------------------------------------------------------------ API pública
 def analizar(datos):
-    """Devuelve {"formato": "bin"|"xml"|None, "paquetes": [{"nombre","nivel"}], "error": str|None}."""
+    """Devuelve {"formato", "paquetes": [{"nombre","nivel"}], "resumen": str, "error": str|None}."""
     f = _formato(datos)
     if f is None:
-        return {"formato": None, "paquetes": [], "error": "No parece un .rbxm/.rbxmx de Roblox."}
+        return {
+            "formato": None,
+            "paquetes": [],
+            "resumen": f"{len(datos)} bytes; empieza con {datos[:16]!r}",
+            "error": "No parece un .rbxm/.rbxmx de Roblox.",
+        }
     try:
-        pk = _analizar_bin(datos) if f == "bin" else _analizar_xml(datos)
-        return {"formato": f, "paquetes": pk, "error": None}
+        pk, res = _analizar_bin(datos) if f == "bin" else _analizar_xml(datos)
+        return {"formato": f, "paquetes": pk, "resumen": f"Formato {f} · " + res, "error": None}
     except Exception as e:
-        return {"formato": f, "paquetes": [], "error": f"No se pudo analizar ({type(e).__name__}: {e})"}
+        return {
+            "formato": f,
+            "paquetes": [],
+            "resumen": f"Formato {f}",
+            "error": f"No se pudo analizar ({type(e).__name__}: {e})",
+        }
 
 
 def convertir(datos):
