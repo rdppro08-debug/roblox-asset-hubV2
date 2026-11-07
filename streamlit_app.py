@@ -1,19 +1,24 @@
-# Roblox Asset Hub v8 (Streamlit) - interfaz estilo app de chat
-#  - Menú lateral (☰): Chat IA con historial y búsqueda, Assets, Publicar juego, Instalar Studio Lite
+# Roblox Asset Hub v9 (Streamlit) - interfaz estilo app de chat
+#  - Menú lateral (☰): Chat IA con historial y búsqueda, Assets, Publicar juego, Instalar Studio Lite,
+#                      Distribuir en Creator Store
 #  - Chat IA (Gemini / Claude / ChatGPT): texto, audio, chats guardados y código copiable
-#  - NUEVO v8: más fluido, colores más suaves, tamaño de letra, botón ✏️ para editar mensajes,
+#  - v8: más fluido, colores más suaves, tamaño de letra, botón ✏️ para editar mensajes,
 #              y el chat/sección se restauran al recargar o volver a abrir la página
 #  - Assets: modelos (.fbx/.gltf/.glb) y animaciones/modelos (.rbxm/.rbxmx)  -> usa ROBLOX_API_KEY
-#  - NUEVO: detecta PackageLink en .rbxm/.rbxmx y sube una COPIA convertida a modelo normal
+#  - Detecta PackageLink en .rbxm/.rbxmx y sube una COPIA convertida a modelo normal
 #           (package_cleaner.py, en la misma carpeta que esta app). Ahora siempre muestra el
 #           estado de cada archivo (con PackageLink / sin PackageLink / error) y un diagnóstico.
 #  - Publicar juegos (.rbxl/.rbxlx) en un place existente      -> usa ROBLOX_PLACE_API_KEY
 #  - Instalar Studio Lite: arma un .rbxlx con los scripts y lo sube (studio_lite_builder.py
 #                          + studio_lite_scripts.json, en la misma carpeta que esta app)
+#  - NUEVO v9: sección "🛒 Distribuir en Creator Store": publica gratis un modelo que YA subiste
+#              (por Asset ID) usando la API oficial POST /cloud/v2/creator-store-products (Beta).
+#              Necesita el permiso creator-store-product:write en la API Key.
 #
 # Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
 # Secrets opcionales:
 #   ROBLOX_PLACE_API_KEY  (API Key aparte para publicar juegos; si falta, usa ROBLOX_API_KEY)
+#   ROBLOX_STORE_API_KEY  (API Key aparte para Creator Store; si falta, usa ROBLOX_API_KEY)
 #   UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
 #   GEMINI_API_KEY        (chat con Gemini; gratis en https://aistudio.google.com/apikey)
 #   ANTHROPIC_API_KEY     (chat con Claude; https://console.anthropic.com)
@@ -65,6 +70,8 @@ def secreto(nombre):
 API_KEY = secreto("ROBLOX_API_KEY")
 PLACE_API_KEY = secreto("ROBLOX_PLACE_API_KEY") or API_KEY
 USA_KEY_SEPARADA = bool(secreto("ROBLOX_PLACE_API_KEY"))
+STORE_API_KEY = secreto("ROBLOX_STORE_API_KEY") or API_KEY
+USA_STORE_KEY_SEPARADA = bool(secreto("ROBLOX_STORE_API_KEY"))
 USER_ID = secreto("ROBLOX_USER_ID")
 APP_USER = secreto("APP_USER")
 APP_PASS = secreto("APP_PASS")
@@ -365,6 +372,64 @@ def publicar_place(universe_id, place_id, contenido, ext, tipo_version):
         return False, "Error de conexion: " + str(err)
 
 
+# ---------- Distribuir en Creator Store (NUEVO v9) ----------
+URL_STORE = "https://apis.roblox.com/cloud/v2/creator-store-products"
+URL_CLOUD_V2 = "https://apis.roblox.com/cloud/v2/"
+
+
+def distribuir_creator_store(asset_id, publicar):
+    """Publica gratis en Creator Store un modelo que ya existe (por Asset ID).
+    Usa POST /cloud/v2/creator-store-products (Beta). Devuelve (ok, mensaje_error, datos_json)."""
+    cuerpo = {
+        "modelAssetId": str(asset_id),
+        "published": bool(publicar),
+        "basePrice": {"currencyCode": "USD", "quantity": {"significand": 0, "exponent": 0}},
+    }
+    try:
+        r = requests.post(
+            URL_STORE,
+            headers={"x-api-key": STORE_API_KEY, "Content-Type": "application/json"},
+            json=cuerpo,
+            timeout=60,
+        )
+    except requests.exceptions.RequestException as err:
+        return False, "Error de conexion: " + str(err), {}
+    try:
+        datos = r.json()
+    except ValueError:
+        datos = {}
+    if not r.ok:
+        pistas = {
+            400: "Solicitud invalida (revisa que el Asset ID sea de un modelo tuyo).",
+            401: "API Key invalida o sin el permiso creator-store-product:write.",
+            403: "Sin autorizacion: la API Key no tiene ese permiso o Roblox no te deja distribuir este asset.",
+            404: "No se encontro ese Asset ID.",
+            409: "Ese modelo ya tiene un producto en Creator Store.",
+            429: "Demasiadas solicitudes, espera un momento.",
+        }
+        detalle = ""
+        if isinstance(datos, dict) and datos.get("message"):
+            detalle = str(datos["message"])
+        else:
+            detalle = r.text[:400]
+        return False, f"HTTP {r.status_code}. {pistas.get(r.status_code, '')} {detalle}".strip(), datos
+    return True, "", datos
+
+
+def consultar_producto_store(ruta):
+    """Consulta el estado del producto creado (necesita creator-store-product:read). None si no se puede."""
+    ruta = str(ruta or "").strip().lstrip("/")
+    if not ruta.startswith("creator-store-products/"):
+        return None
+    try:
+        r = requests.get(URL_CLOUD_V2 + ruta, headers={"x-api-key": STORE_API_KEY}, timeout=30)
+        if r.ok:
+            return r.json()
+    except (requests.exceptions.RequestException, ValueError):
+        pass
+    return None
+
+
 # ---------- Chat con IA (Gemini / Claude / ChatGPT) ----------
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -398,7 +463,14 @@ MAX_CHATS_LATERAL = 30
 INTERVALO_STREAM = 0.07     # segundos entre actualizaciones mientras la IA escribe
 CHATS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chats_guardados.json")
 TITULO_NUEVO = "Chat nuevo"
-SECCIONES = ["💬 Chat IA", "📦 Assets", "🎮 Publicar juego", "🧩 Instalar Studio Lite"]
+# La sección nueva va AL FINAL para no cambiar los números guardados en enlaces anteriores (?s=0..3)
+SECCIONES = [
+    "💬 Chat IA",
+    "📦 Assets",
+    "🎮 Publicar juego",
+    "🧩 Instalar Studio Lite",
+    "🛒 Distribuir en Creator Store",
+]
 
 try:
     ENTRADA_AUDIO = "accept_audio" in inspect.signature(st.chat_input).parameters
@@ -1664,6 +1736,137 @@ def pagina_studio_lite():
 
 
 # =====================================================================
+# PÁGINA: DISTRIBUIR EN CREATOR STORE (NUEVO v9)
+# =====================================================================
+def pagina_distribuir():
+    titulo_pagina(
+        "🛒",
+        "Distribuir en Creator Store",
+        "Publica gratis un modelo que ya subiste, usando su Asset ID. No resube ni cambia el archivo.",
+    )
+    st.info(
+        "Esto usa la API oficial de Creator Store (Beta). Solo **pide a Roblox que publique** el modelo "
+        "que ya existe; no modifica nada de lo ya subido. Si Roblox lo rechaza, aquí verás el motivo."
+    )
+    if USA_STORE_KEY_SEPARADA:
+        st.caption("🔑 Usando la API Key de Creator Store (ROBLOX_STORE_API_KEY).")
+    else:
+        st.caption(
+            "🔑 Usando la API Key general (ROBLOX_API_KEY). Debe tener el permiso "
+            "**creator-store-product:write** (y opcionalmente :read)."
+        )
+
+    # IDs de los modelos recién subidos en la sección Assets (si los hay)
+    ids_subidos = [
+        str(x.get("Asset ID"))
+        for x in st.session_state.get("resultados", [])
+        if x.get("Asset ID") and str(x.get("Resultado", "")).startswith("✅")
+    ]
+
+    with st.container(border=True):
+        st.markdown("**1 · Asset ID(s) del modelo**")
+        texto_ids = st.text_area(
+            "Asset IDs",
+            value="\n".join(ids_subidos),
+            height=120,
+            placeholder="Uno por línea. Ej:\n1234567890\nrbxassetid://9876543210",
+            label_visibility="collapsed",
+            key="dist_ids",
+        )
+        ids = list(dict.fromkeys(re.findall(r"\d{5,}", texto_ids or "")))
+        st.caption(
+            f"{len(ids)} Asset ID(s) detectado(s). Pruébalo primero con UNO."
+            if ids
+            else "Pega el Asset ID (solo números o rbxassetid://...)."
+        )
+
+    with st.container(border=True):
+        st.markdown("**2 · Opciones y confirmación**")
+        publicar = st.checkbox(
+            "Publicar ahora (visible para todos en Creator Store)",
+            value=True,
+            key="dist_publicar",
+            help="Si lo desmarcas, se crea el producto pero sin publicarlo.",
+        )
+        st.caption("Precio: gratis ($0).")
+        confirmar = st.checkbox(
+            "Entiendo que el modelo será gratis y público en Creator Store.",
+            key="dist_ok",
+        )
+
+    if st.button(
+        "🛒 Distribuir en Creator Store",
+        type="primary",
+        disabled=not (ids and confirmar),
+        use_container_width=True,
+    ):
+        filas = []
+        barra = st.progress(0.0)
+        for n, aid in enumerate(ids):
+            with st.spinner(f"Enviando {n + 1}/{len(ids)}: {aid} ..."):
+                ok, msg, datos = distribuir_creator_store(aid, publicar)
+                estado = None
+                if ok and isinstance(datos, dict):
+                    estado = consultar_producto_store(datos.get("path"))
+            filas.append({"id": aid, "ok": ok, "msg": msg, "datos": datos, "estado": estado})
+            barra.progress((n + 1) / len(ids))
+        barra.empty()
+        st.session_state["resultados_store"] = filas
+
+    filas = st.session_state.get("resultados_store")
+    if filas:
+        ok_n = sum(1 for x in filas if x["ok"])
+        st.divider()
+        st.markdown("### Resultados")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total", len(filas))
+        c2.metric("Aceptados", ok_n)
+        c3.metric("Con error", len(filas) - ok_n)
+
+        for x in filas:
+            with st.container(border=True):
+                if x["ok"]:
+                    info = x["estado"] if isinstance(x["estado"], dict) else x["datos"]
+                    info = info if isinstance(info, dict) else {}
+                    restr = info.get("restrictions") or []
+                    restr = [r for r in restr if r != "RESTRICTION_UNSPECIFIED"]
+                    comprable = info.get("purchasable")
+                    st.markdown(f"**{x['id']}** · ✅ Aceptado por Roblox")
+                    if comprable is True:
+                        st.success("Disponible en Creator Store (purchasable = true).")
+                    elif comprable is False:
+                        st.warning(
+                            "Roblox creó el producto pero aún no es comprable/visible"
+                            + (f" (restricciones: {', '.join(restr)})." if restr else ".")
+                        )
+                    else:
+                        st.caption(
+                            "Roblox aceptó la solicitud. No se pudo leer el estado "
+                            "(falta el permiso creator-store-product:read o no devolvió el dato)."
+                        )
+                    if info.get("path"):
+                        st.caption(f"Producto: {info['path']}")
+                else:
+                    st.markdown(f"**{x['id']}** · ❌ Roblox lo rechazó")
+                    st.error(x["msg"])
+                with st.expander("Ver respuesta completa de Roblox"):
+                    st.code(
+                        json.dumps(
+                            {"respuesta": x["datos"], "estado": x["estado"]},
+                            ensure_ascii=False,
+                            indent=1,
+                        ),
+                        language="json",
+                    )
+
+        st.link_button(
+            "Mis creaciones en Roblox",
+            "https://create.roblox.com/dashboard/creations",
+            use_container_width=True,
+        )
+
+
+# =====================================================================
 # ARRANQUE
 # =====================================================================
 iniciar_estado()
@@ -1679,5 +1882,7 @@ elif _seccion == SECCIONES[1]:
     pagina_assets()
 elif _seccion == SECCIONES[2]:
     pagina_juego()
-else:
+elif _seccion == SECCIONES[3]:
     pagina_studio_lite()
+else:
+    pagina_distribuir()
