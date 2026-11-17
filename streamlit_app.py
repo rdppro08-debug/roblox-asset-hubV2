@@ -1,6 +1,5 @@
 # Roblox Asset Hub v9 (Streamlit) - interfaz estilo app de chat
-#  - Menú lateral (☰): Chat IA con historial y búsqueda, Assets, Publicar juego, Instalar Studio Lite,
-#                      Distribuir en Creator Store
+#  - Menú lateral (☰): Chat IA con historial y búsqueda, Assets, Publicar juego
 #  - Chat IA (Gemini / Claude / ChatGPT): texto, audio, chats guardados y código copiable
 #  - v8: más fluido, colores más suaves, tamaño de letra, botón ✏️ para editar mensajes,
 #              y el chat/sección se restauran al recargar o volver a abrir la página
@@ -9,17 +8,15 @@
 #           (package_cleaner.py, en la misma carpeta que esta app). Ahora siempre muestra el
 #           estado de cada archivo (con PackageLink / sin PackageLink / error) y un diagnóstico.
 #  - Publicar juegos (.rbxl/.rbxlx) en un place existente      -> usa ROBLOX_PLACE_API_KEY
-#  - Instalar Studio Lite: arma un .rbxlx con los scripts y lo sube (studio_lite_builder.py
-#                          + studio_lite_scripts.json, en la misma carpeta que esta app)
-#  - NUEVO v9: sección "🛒 Distribuir en Creator Store": publica gratis un modelo que YA subiste
-#              (por Asset ID) usando la API oficial POST /cloud/v2/creator-store-products (Beta).
-#              Necesita el permiso creator-store-product:write en la API Key.
+#  - Recortador IA: recorta partes de un personaje (pelo, brazos, torso, fondo...) en PNG transparente.
+#           Los modelos NO corren aquí: se llama a tu Space de Hugging Face "Recortador IA" -> usa RECORTADOR_SPACE
 #
 # Secrets necesarios: ROBLOX_API_KEY, ROBLOX_USER_ID, APP_USER, APP_PASS
 # Secrets opcionales:
 #   ROBLOX_PLACE_API_KEY  (API Key aparte para publicar juegos; si falta, usa ROBLOX_API_KEY)
-#   ROBLOX_STORE_API_KEY  (API Key aparte para Creator Store; si falta, usa ROBLOX_API_KEY)
 #   UNIVERSE_ID, PLACE_ID (para que aparezcan ya escritos)
+#   RECORTADOR_SPACE      (Recortador IA: "tu-usuario/recortador-ia" o la URL del Space)
+#   HF_TOKEN              (solo si tu Space es privado)
 #   GEMINI_API_KEY        (chat con Gemini; gratis en https://aistudio.google.com/apikey)
 #   ANTHROPIC_API_KEY     (chat con Claude; https://console.anthropic.com)
 #   OPENAI_API_KEY        (chat con ChatGPT; https://platform.openai.com/api-keys)
@@ -31,20 +28,17 @@ import datetime
 import hmac
 import html
 import inspect
+import io
 import json
 import os
 import re
+import tempfile
 import time
+import zipfile
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
-
-try:
-    import studio_lite_builder
-except Exception as _e_sl:
-    studio_lite_builder = None
-    _ERROR_STUDIO_LITE = str(_e_sl)
 
 try:
     import package_cleaner
@@ -70,8 +64,6 @@ def secreto(nombre):
 API_KEY = secreto("ROBLOX_API_KEY")
 PLACE_API_KEY = secreto("ROBLOX_PLACE_API_KEY") or API_KEY
 USA_KEY_SEPARADA = bool(secreto("ROBLOX_PLACE_API_KEY"))
-STORE_API_KEY = secreto("ROBLOX_STORE_API_KEY") or API_KEY
-USA_STORE_KEY_SEPARADA = bool(secreto("ROBLOX_STORE_API_KEY"))
 USER_ID = secreto("ROBLOX_USER_ID")
 APP_USER = secreto("APP_USER")
 APP_PASS = secreto("APP_PASS")
@@ -80,6 +72,8 @@ PLACE_ID_DEF = secreto("PLACE_ID")
 GEMINI_API_KEY = secreto("GEMINI_API_KEY")
 ANTHROPIC_API_KEY = secreto("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = secreto("OPENAI_API_KEY")
+RECORTADOR_SPACE = secreto("RECORTADOR_SPACE")
+HF_TOKEN = secreto("HF_TOKEN")
 
 # ---------- Estilo global (ligero y suave para la vista) ----------
 ESTILO_GLOBAL = """
@@ -372,64 +366,6 @@ def publicar_place(universe_id, place_id, contenido, ext, tipo_version):
         return False, "Error de conexion: " + str(err)
 
 
-# ---------- Distribuir en Creator Store (NUEVO v9) ----------
-URL_STORE = "https://apis.roblox.com/cloud/v2/creator-store-products"
-URL_CLOUD_V2 = "https://apis.roblox.com/cloud/v2/"
-
-
-def distribuir_creator_store(asset_id, publicar):
-    """Publica gratis en Creator Store un modelo que ya existe (por Asset ID).
-    Usa POST /cloud/v2/creator-store-products (Beta). Devuelve (ok, mensaje_error, datos_json)."""
-    cuerpo = {
-        "modelAssetId": str(asset_id),
-        "published": bool(publicar),
-        "basePrice": {"currencyCode": "USD", "quantity": {"significand": 0, "exponent": 0}},
-    }
-    try:
-        r = requests.post(
-            URL_STORE,
-            headers={"x-api-key": STORE_API_KEY, "Content-Type": "application/json"},
-            json=cuerpo,
-            timeout=60,
-        )
-    except requests.exceptions.RequestException as err:
-        return False, "Error de conexion: " + str(err), {}
-    try:
-        datos = r.json()
-    except ValueError:
-        datos = {}
-    if not r.ok:
-        pistas = {
-            400: "Solicitud invalida (revisa que el Asset ID sea de un modelo tuyo).",
-            401: "API Key invalida o sin el permiso creator-store-product:write.",
-            403: "Sin autorizacion: la API Key no tiene ese permiso o Roblox no te deja distribuir este asset.",
-            404: "No se encontro ese Asset ID.",
-            409: "Ese modelo ya tiene un producto en Creator Store.",
-            429: "Demasiadas solicitudes, espera un momento.",
-        }
-        detalle = ""
-        if isinstance(datos, dict) and datos.get("message"):
-            detalle = str(datos["message"])
-        else:
-            detalle = r.text[:400]
-        return False, f"HTTP {r.status_code}. {pistas.get(r.status_code, '')} {detalle}".strip(), datos
-    return True, "", datos
-
-
-def consultar_producto_store(ruta):
-    """Consulta el estado del producto creado (necesita creator-store-product:read). None si no se puede."""
-    ruta = str(ruta or "").strip().lstrip("/")
-    if not ruta.startswith("creator-store-products/"):
-        return None
-    try:
-        r = requests.get(URL_CLOUD_V2 + ruta, headers={"x-api-key": STORE_API_KEY}, timeout=30)
-        if r.ok:
-            return r.json()
-    except (requests.exceptions.RequestException, ValueError):
-        pass
-    return None
-
-
 # ---------- Chat con IA (Gemini / Claude / ChatGPT) ----------
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -468,8 +404,7 @@ SECCIONES = [
     "💬 Chat IA",
     "📦 Assets",
     "🎮 Publicar juego",
-    "🧩 Instalar Studio Lite",
-    "🛒 Distribuir en Creator Store",
+    "✂️ Recortador IA",
 ]
 
 try:
@@ -931,7 +866,8 @@ def iniciar_estado():
         s_url = str(st.query_params.get("s", ""))
         if s_url.isdigit() and int(s_url) < len(SECCIONES):
             ss["seccion"] = SECCIONES[int(s_url)]
-    ss.setdefault("seccion", SECCIONES[0])
+    if ss.get("seccion") not in SECCIONES:
+        ss["seccion"] = SECCIONES[0]
     ss.setdefault("audio_n", 0)
     ss.setdefault("sistema", SISTEMA_DEF)
     ss.setdefault("razonamiento", "Bajo")
@@ -1672,198 +1608,287 @@ def pagina_juego():
 
 
 # =====================================================================
-# PÁGINA: INSTALAR STUDIO LITE
+# PÁGINA: RECORTADOR IA  (los modelos viven en tu Space de Hugging Face)
 # =====================================================================
-def pagina_studio_lite():
-    titulo_pagina(
-        "🧩",
-        "Instalar Studio Lite",
-        "Arma un juego con todos los scripts de Studio Lite y lo sube a tu place de pruebas.",
-    )
-    if studio_lite_builder is None:
-        st.error("No se pudo cargar studio_lite_builder.py: " + _ERROR_STUDIO_LITE)
-        return
-    st.info(
-        "Esto **reemplaza el contenido del place** que indiques. Usa un place de pruebas vacío, "
-        "no tu juego real."
-    )
-    with st.container(border=True):
-        st.markdown("**1 · Place de pruebas**")
-        uid = st.text_input("Universe ID", value=UNIVERSE_ID_DEF, key="sl_universe")
-        pid = st.text_input("Place ID", value=PLACE_ID_DEF, key="sl_place")
-        ok_ids = uid.strip().isdigit() and pid.strip().isdigit()
-        confirmar = st.checkbox("Entiendo que se reemplazará el contenido del place.", key="sl_ok")
+RECORTADOR_PARTES = [  # (clave, etiqueta). Las claves son las mismas del engine.py del Space
+    ("hair", "Pelo"),
+    ("arm_left", "Brazo izquierdo"),
+    ("arm_right", "Brazo derecho"),
+    ("torso", "Torso"),
+    ("background", "Fondo"),
+    ("eyes", "Ojos"),
+    ("mouth", "Boca"),
+    ("leg_left", "Pierna izquierda"),
+    ("leg_right", "Pierna derecha"),
+    ("full_character", "Personaje completo"),
+]
+RECORTADOR_INICIALES = ("hair", "torso", "full_character")
+RECORTADOR_MAX_MB = 15
+RECORTADOR_LADOS = (
+    "**Izquierdo / derecho = del PERSONAJE**, no del espectador. "
+    "Si el personaje te mira de frente, su brazo izquierdo aparece en el lado **derecho** de la pantalla."
+)
 
-    nivel_txt = st.radio(
-        "Qué subir (si falla, prueba de arriba hacia abajo para ver dónde se rompe)",
-        list(studio_lite_builder.NIVELES),
-        index=len(studio_lite_builder.NIVELES) - 1,
-        key="sl_nivel",
-    )
+
+def _rec_marcar(valor):
+    for k, _ in RECORTADOR_PARTES:
+        st.session_state[f"rec_p_{k}"] = valor
+
+
+def _rec_conectar():
+    from gradio_client import Client
+
     try:
-        datos, lista = studio_lite_builder.construir_rbxlx(studio_lite_builder.NIVELES[nivel_txt])
-    except Exception as err:
-        st.error(f"❌ No se pudo armar el archivo: {err}")
-        return
-    st.caption(f"Se incluirán {len(lista)} scripts · {len(datos) / 1024:.0f} KB.")
-    with st.expander("Ver scripts incluidos"):
-        st.code("\n".join(lista), language=None)
-
-    if st.button(
-        "🚀 Instalar Studio Lite",
-        type="primary",
-        disabled=not (ok_ids and confirmar),
-        use_container_width=True,
-    ):
-        with st.spinner("Subiendo a Roblox..."):
-            ok, detalle = publicar_place(uid.strip(), pid.strip(), datos, ".rbxlx", "Published")
-        if ok:
-            st.success(f"✅ Listo. Versión {detalle} publicada. Abre el juego desde la app de Roblox.")
-            st.link_button(
-                "Abrir en Roblox",
-                f"https://www.roblox.com/games/{pid.strip()}",
-                use_container_width=True,
-            )
-        else:
-            st.error(f"❌ {detalle}")
-    st.download_button(
-        "⬇️ Descargar StudioLite.rbxlx (opcional)",
-        data=datos,
-        file_name="StudioLite.rbxlx",
-        mime="application/xml",
-        use_container_width=True,
-    )
+        return Client(RECORTADOR_SPACE, hf_token=HF_TOKEN or None, verbose=False)
+    except TypeError:  # versiones nuevas de gradio_client renombran el argumento
+        return Client(RECORTADOR_SPACE, token=HF_TOKEN or None, verbose=False)
 
 
-# =====================================================================
-# PÁGINA: DISTRIBUIR EN CREATOR STORE (NUEVO v9)
-# =====================================================================
-def pagina_distribuir():
+def _rec_llamar(datos, nombre, claves, de_frente):
+    """Envía la imagen al Space y devuelve (ruta_zip | None, info_json)."""
+    from gradio_client import handle_file
+
+    ext = os.path.splitext(nombre or "")[1].lower() or ".png"
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+        f.write(datos)
+        ruta = f.name
+    try:
+        cliente = _rec_conectar()
+        trabajo = cliente.submit(
+            handle_file(ruta), ",".join(claves), "front" if de_frente else "back", api_name="/recortar"
+        )
+        return trabajo.result(timeout=1500)
+    finally:
+        try:
+            os.unlink(ruta)
+        except OSError:
+            pass
+
+
+def _rec_vista(png):
+    """Vista previa recortada al contorno sobre fondo de cuadros (transparencia visible)."""
+    import numpy as np
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(png)).convert("RGBA")
+    caja = im.getchannel("A").point(lambda v: 255 if v > 5 else 0).getbbox()
+    if not caja:
+        return None
+    mg = int(0.04 * max(caja[2] - caja[0], caja[3] - caja[1])) + 2
+    im = im.crop((max(0, caja[0] - mg), max(0, caja[1] - mg), min(im.width, caja[2] + mg), min(im.height, caja[3] + mg)))
+    esc = min(640 / max(im.size), 4.0)
+    if abs(esc - 1.0) > 1e-3:
+        im = im.resize((max(1, round(im.width * esc)), max(1, round(im.height * esc))), Image.LANCZOS)
+    yy, xx = np.indices((im.height, im.width))
+    cuadros = np.where(((yy // 16 + xx // 16) % 2) == 0, 200, 245).astype(np.uint8)
+    fondo = Image.fromarray(cuadros).convert("RGB")
+    fondo.paste(im, (0, 0), im)
+    return fondo
+
+
+def _rec_bytes(clave, recortado):
+    """PNG de una parte: lienzo completo, o recortado a su contorno (con caché de sesión)."""
+    from PIL import Image
+
+    png = st.session_state["rec_res"]["partes"][clave]["png"]
+    if not recortado:
+        return png
+    cache = st.session_state.setdefault("rec_cache", {})
+    if clave not in cache:
+        im = Image.open(io.BytesIO(png)).convert("RGBA")
+        caja = im.getchannel("A").point(lambda v: 255 if v > 5 else 0).getbbox()
+        if caja:
+            im = im.crop(caja)
+        salida = io.BytesIO()
+        im.save(salida, format="PNG")
+        cache[clave] = salida.getvalue()
+    return cache[clave]
+
+
+def _rec_nombres(claves):
+    """Nombres de archivo limpios y sin repetir, tomados de los campos de texto."""
+    usados, nombres = set(), {}
+    for k in claves:
+        base = re.sub(r"[^\w\-]+", "_", str(st.session_state.get(f"rec_n_{k}", k)).strip()).strip("_")[:60] or k
+        cand, i = base, 2
+        while cand.lower() in usados:
+            cand, i = f"{base}_{i}", i + 1
+        usados.add(cand.lower())
+        nombres[k] = cand
+    return nombres
+
+
+def _rec_zip(claves, nombres, recortado):
+    cache = st.session_state.setdefault("rec_cache", {})
+    firma = ("zip", recortado, tuple((k, nombres[k]) for k in claves))
+    if cache.get("zip_firma") != firma:
+        salida = io.BytesIO()
+        with zipfile.ZipFile(salida, "w", zipfile.ZIP_STORED) as z:
+            for k in claves:
+                z.writestr(f"{nombres[k]}.png", _rec_bytes(k, recortado))
+        cache["zip_firma"], cache["zip_datos"] = firma, salida.getvalue()
+    return cache["zip_datos"]
+
+
+def pagina_recortador():
     titulo_pagina(
-        "🛒",
-        "Distribuir en Creator Store",
-        "Publica gratis un modelo que ya subiste, usando su Asset ID. No resube ni cambia el archivo.",
+        "✂️",
+        "Recortador IA",
+        "Sube un personaje y recorta sus partes como PNG transparente.",
     )
-    st.info(
-        "Esto usa la API oficial de Creator Store (Beta). Solo **pide a Roblox que publique** el modelo "
-        "que ya existe; no modifica nada de lo ya subido. Si Roblox lo rechaza, aquí verás el motivo."
-    )
-    if USA_STORE_KEY_SEPARADA:
-        st.caption("🔑 Usando la API Key de Creator Store (ROBLOX_STORE_API_KEY).")
-    else:
-        st.caption(
-            "🔑 Usando la API Key general (ROBLOX_API_KEY). Debe tener el permiso "
-            "**creator-store-product:write** (y opcionalmente :read)."
+    if not RECORTADOR_SPACE:
+        st.info(
+            "Esta sección usa tu Space de Hugging Face **Recortador IA** (los modelos no caben aquí).\n\n"
+            "1. Sube el Space con el `app.py` nuevo (trae el endpoint `/recortar`).\n"
+            "2. En los secrets de esta app añade `RECORTADOR_SPACE = \"tu-usuario/recortador-ia\"` "
+            "(y `HF_TOKEN` solo si el Space es privado).\n"
+            "3. Añade `gradio_client` a `requirements.txt` y reinicia."
         )
+        return
+    try:
+        import gradio_client  # noqa: F401
+    except Exception:
+        st.error("Falta el paquete `gradio_client`. Añádelo a `requirements.txt` y reinicia la app.")
+        return
 
-    # IDs de los modelos recién subidos en la sección Assets (si los hay)
-    ids_subidos = [
-        str(x.get("Asset ID"))
-        for x in st.session_state.get("resultados", [])
-        if x.get("Asset ID") and str(x.get("Resultado", "")).startswith("✅")
-    ]
+    ss = st.session_state
+    for k, _ in RECORTADOR_PARTES:
+        ss.setdefault(f"rec_p_{k}", k in RECORTADOR_INICIALES)
 
     with st.container(border=True):
-        st.markdown("**1 · Asset ID(s) del modelo**")
-        texto_ids = st.text_area(
-            "Asset IDs",
-            value="\n".join(ids_subidos),
-            height=120,
-            placeholder="Uno por línea. Ej:\n1234567890\nrbxassetid://9876543210",
+        st.markdown("**1 · Imagen del personaje**")
+        archivo = st.file_uploader(
+            "Imagen",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="rec_uploader",
             label_visibility="collapsed",
-            key="dist_ids",
         )
-        ids = list(dict.fromkeys(re.findall(r"\d{5,}", texto_ids or "")))
-        st.caption(
-            f"{len(ids)} Asset ID(s) detectado(s). Pruébalo primero con UNO."
-            if ids
-            else "Pega el Asset ID (solo números o rbxassetid://...)."
-        )
+        with st.expander("📷 Usar la cámara"):
+            foto = st.camera_input("Foto", key="rec_camara", label_visibility="collapsed")
+        origen = archivo or foto
+        if origen:
+            st.image(origen)
+            st.caption(f"{getattr(origen, 'name', 'foto')} · {origen.size / (1024 * 1024):.1f} MB")
 
     with st.container(border=True):
-        st.markdown("**2 · Opciones y confirmación**")
-        publicar = st.checkbox(
-            "Publicar ahora (visible para todos en Creator Store)",
-            value=True,
-            key="dist_publicar",
-            help="Si lo desmarcas, se crea el producto pero sin publicarlo.",
+        st.markdown("**2 · ¿Qué partes quieres?**")
+        st.caption(RECORTADOR_LADOS)
+        de_frente = st.radio(
+            "¿Cómo está el personaje en la imagen?",
+            ["De frente (me mira)", "De espaldas"],
+            key="rec_orientacion",
+        ).startswith("De frente")
+        for k, etiqueta in RECORTADOR_PARTES:
+            st.checkbox(etiqueta, key=f"rec_p_{k}")
+        c1, c2 = st.columns(2)
+        c1.button("Seleccionar todas", on_click=_rec_marcar, args=(True,), use_container_width=True, key="rec_todas")
+        c2.button("Quitar todas", on_click=_rec_marcar, args=(False,), use_container_width=True, key="rec_ninguna")
+
+    with st.container(border=True):
+        st.markdown("**3 · Tamaño de la descarga**")
+        modo = st.radio(
+            "Tamaño",
+            ["Tamaño original del lienzo (las piezas encajan)", "Recortado a su contorno"],
+            key="rec_modo",
+            label_visibility="collapsed",
         )
-        st.caption("Precio: gratis ($0).")
-        confirmar = st.checkbox(
-            "Entiendo que el modelo será gratis y público en Creator Store.",
-            key="dist_ok",
-        )
+        recortado = modo.startswith("Recortado")
+
+    elegidas = [k for k, _ in RECORTADOR_PARTES if ss.get(f"rec_p_{k}")]
+    st.caption("La primera vez el Space puede tardar en despertar; en CPU el recorte puede tardar varios minutos.")
 
     if st.button(
-        "🛒 Distribuir en Creator Store",
+        "✂️ Recortar",
         type="primary",
-        disabled=not (ids and confirmar),
+        disabled=not (origen and elegidas),
         use_container_width=True,
+        key="rec_ir",
     ):
-        filas = []
-        barra = st.progress(0.0)
-        for n, aid in enumerate(ids):
-            with st.spinner(f"Enviando {n + 1}/{len(ids)}: {aid} ..."):
-                ok, msg, datos = distribuir_creator_store(aid, publicar)
-                estado = None
-                if ok and isinstance(datos, dict):
-                    estado = consultar_producto_store(datos.get("path"))
-            filas.append({"id": aid, "ok": ok, "msg": msg, "datos": datos, "estado": estado})
-            barra.progress((n + 1) / len(ids))
-        barra.empty()
-        st.session_state["resultados_store"] = filas
-
-    filas = st.session_state.get("resultados_store")
-    if filas:
-        ok_n = sum(1 for x in filas if x["ok"])
-        st.divider()
-        st.markdown("### Resultados")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total", len(filas))
-        c2.metric("Aceptados", ok_n)
-        c3.metric("Con error", len(filas) - ok_n)
-
-        for x in filas:
-            with st.container(border=True):
-                if x["ok"]:
-                    info = x["estado"] if isinstance(x["estado"], dict) else x["datos"]
-                    info = info if isinstance(info, dict) else {}
-                    restr = info.get("restrictions") or []
-                    restr = [r for r in restr if r != "RESTRICTION_UNSPECIFIED"]
-                    comprable = info.get("purchasable")
-                    st.markdown(f"**{x['id']}** · ✅ Aceptado por Roblox")
-                    if comprable is True:
-                        st.success("Disponible en Creator Store (purchasable = true).")
-                    elif comprable is False:
-                        st.warning(
-                            "Roblox creó el producto pero aún no es comprable/visible"
-                            + (f" (restricciones: {', '.join(restr)})." if restr else ".")
-                        )
-                    else:
-                        st.caption(
-                            "Roblox aceptó la solicitud. No se pudo leer el estado "
-                            "(falta el permiso creator-store-product:read o no devolvió el dato)."
-                        )
-                    if info.get("path"):
-                        st.caption(f"Producto: {info['path']}")
-                else:
-                    st.markdown(f"**{x['id']}** · ❌ Roblox lo rechazó")
-                    st.error(x["msg"])
-                with st.expander("Ver respuesta completa de Roblox"):
-                    st.code(
-                        json.dumps(
-                            {"respuesta": x["datos"], "estado": x["estado"]},
-                            ensure_ascii=False,
-                            indent=1,
-                        ),
-                        language="json",
+        datos = origen.getvalue()
+        if len(datos) > RECORTADOR_MAX_MB * 1024 * 1024:
+            st.error(f"La imagen pesa más de {RECORTADOR_MAX_MB} MB. Redúcela y vuelve a intentarlo.")
+        else:
+            with st.status("Conectando con el Recortador IA…", expanded=True) as estado:
+                try:
+                    estado.update(label="Detectando y recortando… (puede tardar)")
+                    ruta_zip, info_json = _rec_llamar(datos, getattr(origen, "name", "foto.jpg"), elegidas, de_frente)
+                    info = json.loads(info_json) if info_json else {}
+                    partes = {}
+                    if ruta_zip:
+                        with zipfile.ZipFile(ruta_zip) as z:
+                            for nombre in z.namelist():
+                                clave = os.path.splitext(os.path.basename(nombre))[0]
+                                png = z.read(nombre)
+                                partes[clave] = {"png": png, "vista": _rec_vista(png)}
+                    res = {}
+                    for k in elegidas:
+                        d = info.get(k, {"estado": "missing", "nota": "el Space no devolvió esta parte"})
+                        item = partes.get(k)
+                        res[k] = {
+                            "estado": d.get("estado", "missing") if item else (d.get("estado") if d.get("estado") == "error" else "missing"),
+                            "nota": d.get("nota", ""),
+                            "png": item["png"] if item else None,
+                            "vista": item["vista"] if item else None,
+                        }
+                    ss["rec_res"] = {"partes": res, "orden": list(elegidas)}
+                    ss["rec_cache"] = {}
+                    for k, _ in RECORTADOR_PARTES:
+                        ss.pop(f"rec_n_{k}", None)
+                    estado.update(label="Listo", state="complete", expanded=False)
+                except Exception as e:
+                    estado.update(label="No se pudo recortar", state="error")
+                    st.error(
+                        f"No pude completar el recorte: {type(e).__name__}: {e}\n\n"
+                        "Si el Space estaba dormido o arrancando, espera 1–2 minutos y reintenta. "
+                        "Revisa también que `RECORTADOR_SPACE` esté bien escrito (y `HF_TOKEN` si el Space es privado) "
+                        "y que el Space tenga el `app.py` nuevo con el endpoint `/recortar`."
                     )
 
-        st.link_button(
-            "Mis creaciones en Roblox",
-            "https://create.roblox.com/dashboard/creations",
+    resultado = ss.get("rec_res")
+    if not resultado:
+        st.caption("Aún no hay recortes. Sube una imagen, elige partes y toca **Recortar**.")
+        return
+
+    claves_ok = [k for k in resultado["orden"] if resultado["partes"][k]["png"]]
+    st.markdown("### Resultados")
+    st.success(f"{len(claves_ok)} de {len(resultado['orden'])} partes recortadas.")
+    if claves_ok:
+        nombres = _rec_nombres(claves_ok)
+        st.download_button(
+            "⬇️ Descargar todo (ZIP)",
+            data=_rec_zip(claves_ok, nombres, recortado),
+            file_name="recortes.zip",
+            mime="application/zip",
+            type="primary",
             use_container_width=True,
+            key="rec_dl_zip",
         )
+    etiquetas = dict(RECORTADOR_PARTES)
+    for k in resultado["orden"]:
+        p = resultado["partes"][k]
+        with st.container(border=True):
+            nota = f" — {p['nota']}" if p["nota"] else ""
+            if p["png"] and p["estado"] == "approx":
+                st.markdown(f"**{etiquetas[k]}** · ⚠️ Aproximada{nota}")
+            elif p["png"]:
+                st.markdown(f"**{etiquetas[k]}** · ✅ Detectada")
+            elif p["estado"] == "error":
+                st.markdown(f"**{etiquetas[k]}** · ❌ Error{nota}")
+            else:
+                st.markdown(f"**{etiquetas[k]}** · ❌ No detectada{nota}")
+                st.caption("Prueba con una imagen más clara o con el personaje más grande.")
+            if p["png"]:
+                if p["vista"] is not None:
+                    st.image(p["vista"])
+                st.text_input("Nombre del archivo (sin .png)", value=k, key=f"rec_n_{k}")
+                st.download_button(
+                    "⬇️ Descargar PNG",
+                    data=_rec_bytes(k, recortado),
+                    file_name=f"{_rec_nombres(claves_ok)[k]}.png",
+                    mime="image/png",
+                    use_container_width=True,
+                    key=f"rec_dl_{k}",
+                )
 
 
 # =====================================================================
@@ -1882,7 +1907,5 @@ elif _seccion == SECCIONES[1]:
     pagina_assets()
 elif _seccion == SECCIONES[2]:
     pagina_juego()
-elif _seccion == SECCIONES[3]:
-    pagina_studio_lite()
 else:
-    pagina_distribuir()
+    pagina_recortador()
