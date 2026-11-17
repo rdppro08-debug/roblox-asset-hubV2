@@ -1,3 +1,4 @@
 streamlit>=1.40
 requests
 zstandard
+gradio_client>=1.4
